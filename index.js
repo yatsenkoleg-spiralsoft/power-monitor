@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const tuya = require('./tuya');
 const db = require('./db');
 
@@ -6,6 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Middleware
+app.use(cors()); // Разрешаем CORS для всех запросов
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
