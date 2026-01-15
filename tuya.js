@@ -100,6 +100,9 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         
         const responseTime = Date.now() - startTime;
         
+        // Логируем полный ответ API для диагностики
+        console.log(`[${deviceId}] Полный ответ Tuya API:`, JSON.stringify(response.data, null, 2));
+        
         if (response.data && response.data.success) {
             // Устройство доступно - значит свет есть
             // Извлекаем данные о потреблении
@@ -108,9 +111,23 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                 return acc;
             }, {});
             
+            // Логируем извлеченный statusMap для анализа
+            console.log(`[${deviceId}] Статус map (extracted):`, JSON.stringify(statusMap, null, 2));
+            
             // Получаем потребление (cur_power приходит в десятых долях ватта, делим на 10)
             const powerValue = statusMap['cur_power'] || null;
             const powerConsumptionW = powerValue !== null ? powerValue / 10 : null;
+            
+            // Логируем все поля из statusMap для анализа
+            console.log(`[${deviceId}] Анализ данных:`, {
+                cur_power: statusMap['cur_power'],
+                powerConsumptionW,
+                switch_1: statusMap['switch_1'],
+                online: statusMap['online'],
+                hasResult: !!response.data.result,
+                resultLength: response.data.result ? response.data.result.length : 0,
+                allCodes: Object.keys(statusMap)
+            });
             
             return {
                 isOnline: true,
