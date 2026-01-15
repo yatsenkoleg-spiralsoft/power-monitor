@@ -241,6 +241,68 @@ app.get('/api/overall', async (req, res) => {
 });
 
 /**
+ * API endpoint для получения суммарного потребления за день
+ * GET /api/daily-power?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&days=30
+ */
+app.get('/api/daily-power', async (req, res) => {
+    try {
+        const { deviceId, startDate, endDate, days } = req.query;
+        
+        // Если указан days - используем его, иначе startDate/endDate
+        let dailyPower;
+        if (days) {
+            const daysNum = parseInt(days, 10);
+            const endDateStr = new Date().toISOString().split('T')[0];
+            const startDateStr = new Date(Date.now() - daysNum * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            dailyPower = await db.getDailyPowerConsumption(deviceId || null, startDateStr, endDateStr);
+        } else {
+            dailyPower = await db.getDailyPowerConsumption(deviceId || null, startDate || null, endDate || null);
+        }
+        
+        res.json({
+            success: true,
+            data: dailyPower
+        });
+    } catch (error) {
+        console.error('Ошибка получения суммарного потребления:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint для получения детальных данных о потреблении за день (для графика)
+ * GET /api/power-details?deviceId=xxx&date=YYYY-MM-DD
+ */
+app.get('/api/power-details', async (req, res) => {
+    try {
+        const { deviceId, date } = req.query;
+        
+        if (!deviceId || !date) {
+            return res.status(400).json({
+                success: false,
+                error: 'Требуются параметры deviceId и date (YYYY-MM-DD)'
+            });
+        }
+        
+        const details = await db.getDailyPowerDetails(deviceId, date);
+        
+        res.json({
+            success: true,
+            data: details
+        });
+    } catch (error) {
+        console.error('Ошибка получения детальных данных о потреблении:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Health check endpoint
  */
 app.get('/health', async (req, res) => {
