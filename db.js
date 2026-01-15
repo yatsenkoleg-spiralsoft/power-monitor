@@ -89,8 +89,8 @@ async function getStats(deviceId = null, startDate = null, endDate = null) {
                 SUM(is_online) as minutes_online,
                 COUNT(*) - SUM(is_online) as minutes_offline,
                 AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
-                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
@@ -170,8 +170,8 @@ async function getDailyChart(deviceId = null, days = 30) {
                     SUM(is_online) as minutes_online,
                     COUNT(*) - SUM(is_online) as minutes_offline,
                     ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
-                    AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                    SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                    AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
                 FROM power_status
                 WHERE DATE(timestamp) = CURDATE()
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -190,8 +190,8 @@ async function getDailyChart(deviceId = null, days = 30) {
                     SUM(is_online) as minutes_online,
                     COUNT(*) - SUM(is_online) as minutes_offline,
                     ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
-                    AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                    SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                    AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
                 FROM power_status
                 WHERE timestamp >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -231,8 +231,8 @@ async function getOverallStats(deviceId = null, startDate = null, endDate = null
                 ROUND(SUM(is_online) / 60.0, 2) as hours_online,
                 ROUND((COUNT(*) - SUM(is_online)) / 60.0, 2) as hours_offline,
                 AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
-                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;

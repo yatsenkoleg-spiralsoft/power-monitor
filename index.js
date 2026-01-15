@@ -37,12 +37,16 @@ app.post('/monitor', async (req, res) => {
                 
                 // Сохраняем результат в БД (но не прерываем выполнение при ошибке БД)
                 try {
+                    // Важно: если устройство офлайн, потребление должно быть NULL
+                    // Даже если API вернул старое значение - не сохраняем его для офлайн устройств
+                    const powerConsumptionToSave = result.isOnline ? result.powerConsumptionW : null;
+                    
                     await db.savePowerStatus(
                         result.deviceId,
                         result.deviceName,
                         result.isOnline,
                         result.responseTimeMs,
-                        result.powerConsumptionW,
+                        powerConsumptionToSave,
                         result.error
                     );
                 } catch (dbError) {
