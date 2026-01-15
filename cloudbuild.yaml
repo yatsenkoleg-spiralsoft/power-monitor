@@ -1,0 +1,42 @@
+steps:
+  # Собираем Docker образ
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/power-monitor:$SHORT_SHA', '-t', 'gcr.io/$PROJECT_ID/power-monitor:latest', '.']
+  
+  # Пушим образ в Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/power-monitor:$SHORT_SHA']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/power-monitor:latest']
+  
+  # Деплоим в Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'power-monitor'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/power-monitor:$SHORT_SHA'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '512Mi'
+      - '--timeout'
+      - '300'
+      - '--port'
+      - '8080'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+images:
+  - 'gcr.io/$PROJECT_ID/power-monitor:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/power-monitor:latest'
+
+timeout: '1200s'
