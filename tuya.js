@@ -15,6 +15,7 @@ const DEVICE_IDS = process.env.DEVICE_IDS
     };
 
 let accessToken = null;
+let tokenExpiryTime = null; // Время истечения токена
 
 // Проверка обязательных переменных окружения
 if (!ACCESS_ID || !ACCESS_KEY) {
@@ -39,8 +40,16 @@ function signRequest(path, method, query = {}, body = {}, token = null) {
 /**
  * Получает токен доступа к Tuya API
  */
-async function getAccessToken() {
-    if (accessToken) return accessToken;
+async function getAccessToken(forceRefresh = false) {
+    // Проверяем, не истек ли токен (если есть время истечения)
+    if (accessToken && !forceRefresh) {
+        if (tokenExpiryTime && Date.now() < tokenExpiryTime) {
+            return accessToken;
+        }
+        // Токен истек или нет информации о времени истечения
+        console.log("Токен истек, запрашиваю новый...");
+        accessToken = null;
+    }
     
     console.log("Запрашиваю новый токен доступа Tuya...");
     try {
@@ -63,25 +72,30 @@ async function getAccessToken() {
         
         if (response.data && response.data.success) {
             accessToken = response.data.result.access_token;
-            console.log('Токен Tuya успешно получен');
+            // Токен обычно действует 7200 секунд (2 часа), но обновляем за 5 минут до истечения
+            const expiresIn = (response.data.result.expire_time || 7200) * 1000; // Конвертируем в миллисекунды
+            tokenExpiryTime = Date.now() + expiresIn - (5 * 60 * 1000); // Обновляем за 5 минут до истечения
+            console.log('Токен Tuya успешно получен, истекает через', expiresIn / 1000, 'секунд');
             return accessToken;
         }
         throw new Error(response.data.msg || 'Unknown error');
     } catch (error) {
         console.error('Ошибка получения токена Tuya:', error.message);
+        accessToken = null;
+        tokenExpiryTime = null;
         throw new Error(`Не удалось получить токен доступа: ${error.message}`);
     }
 }
 
 /**
- * Получает информацию об устройстве (включая онлайн-статус)
- * Endpoint: GET /v1.0/devices/{device_id}
+ * Выполняет запрос с автоматическим обновлением токена при ошибке "token invalid"
  */
-async function getDeviceInfo(deviceId) {
+async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retryCount = 0) {
+    const MAX_RETRIES = 1;
+    
     try {
-        const token = await getAccessToken();
-        const path = `/v1.0/devices/${deviceId}`;
-        const { t, sign } = signRequest(path, 'GET', {}, {}, token);
+        let token = await getAccessToken();
+        const { t, sign } = signRequest(path, method, query, body, token);
         
         const headers = {
             'client_id': ACCESS_ID,
@@ -91,10 +105,74 @@ async function getDeviceInfo(deviceId) {
             'sign_method': 'HMAC-SHA256'
         };
         
-        const response = await axios.get(`${API_BASE_URL}${path}`, {
+        const config = {
             headers,
-            timeout: 10000
-        });
+            timeout: 15000
+        };
+        
+        if (method === 'GET') {
+            config.params = query;
+        }
+        
+        let response;
+        if (method === 'GET') {
+            response = await axios.get(`${API_BASE_URL}${path}`, config);
+        } else if (method === 'POST') {
+            response = await axios.post(`${API_BASE_URL}${path}`, body, config);
+        } else if (method === 'PUT') {
+            response = await axios.put(`${API_BASE_URL}${path}`, body, config);
+        } else {
+            throw new Error(`Unsupported method: ${method}`);
+        }
+        
+        // Проверяем, не истек ли токен
+        if (response.data && !response.data.success) {
+            const errorCode = response.data.code;
+            const errorMsg = response.data.msg;
+            
+            // Ошибка "token invalid" (code 1010) или "token expired" (code 1011)
+            if ((errorCode === 1010 || errorCode === 1011) && retryCount < MAX_RETRIES) {
+                console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
+                accessToken = null; // Сбрасываем токен
+                tokenExpiryTime = null;
+                // Повторяем запрос с новым токеном
+                return makeTuyaRequest(path, method, query, body, retryCount + 1);
+            }
+            
+            // Rate limiting (429) - обычно не должно происходить при мониторинге каждую минуту
+            if (errorCode === 429) {
+                console.warn('Rate limit достигнут, ожидаю перед повтором...');
+                // Не повторяем при rate limit, возвращаем ошибку
+                throw new Error('Rate limit exceeded');
+            }
+        }
+        
+        return response;
+    } catch (error) {
+        // Обработка ошибок сети и HTTP ошибок
+        if (error.response && error.response.data) {
+            const errorCode = error.response.data.code;
+            const errorMsg = error.response.data.msg;
+            
+            if ((errorCode === 1010 || errorCode === 1011) && retryCount < MAX_RETRIES) {
+                console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
+                accessToken = null;
+                tokenExpiryTime = null;
+                return makeTuyaRequest(path, method, query, body, retryCount + 1);
+            }
+        }
+        throw error;
+    }
+}
+
+/**
+ * Получает информацию об устройстве (включая онлайн-статус)
+ * Endpoint: GET /v1.0/devices/{device_id}
+ */
+async function getDeviceInfo(deviceId) {
+    try {
+        const path = `/v1.0/devices/${deviceId}`;
+        const response = await makeTuyaRequest(path, 'GET');
         
         if (response.data && response.data.success) {
             return response.data.result;
@@ -114,28 +192,13 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
     const startTime = Date.now();
     
     try {
-        const token = await getAccessToken();
-        
         // Получаем информацию об устройстве для проверки реального онлайн-статуса
         const deviceInfo = await getDeviceInfo(deviceId);
         console.log(`[${deviceId}] Информация об устройстве:`, JSON.stringify(deviceInfo, null, 2));
         
-        // Получаем статус устройства
+        // Получаем статус устройства через makeTuyaRequest (с автоматическим обновлением токена)
         const path = `/v1.0/devices/${deviceId}/status`;
-        const { t, sign } = signRequest(path, 'GET', {}, {}, token);
-        
-        const headers = {
-            'client_id': ACCESS_ID,
-            'access_token': token,
-            'sign': sign,
-            't': t,
-            'sign_method': 'HMAC-SHA256'
-        };
-        
-        const response = await axios.get(`${API_BASE_URL}${path}`, {
-            headers,
-            timeout: 15000 // 15 секунд таймаут для проверки
-        });
+        const response = await makeTuyaRequest(path, 'GET');
         
         const responseTime = Date.now() - startTime;
         
@@ -252,6 +315,7 @@ function getDevices() {
  */
 function resetToken() {
     accessToken = null;
+    tokenExpiryTime = null;
 }
 
 module.exports = {
