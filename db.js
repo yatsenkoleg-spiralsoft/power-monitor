@@ -339,6 +339,57 @@ async function getDailyPowerDetails(deviceId, date) {
 }
 
 /**
+ * Получает почасовые данные за период (для графика)
+ */
+async function getHourlyData(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                DATE_FORMAT(timestamp, '%Y-%m-%d %H:00') as hour,
+                DATE(timestamp) as date,
+                HOUR(timestamp) as hour_num,
+                device_id,
+                device_name,
+                COUNT(*) as total_checks,
+                SUM(is_online) as minutes_online,
+                COUNT(*) - SUM(is_online) as minutes_offline,
+                ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+            FROM power_status
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(timestamp) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(timestamp) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' GROUP BY DATE(timestamp), HOUR(timestamp), device_id, device_name ORDER BY date ASC, hour_num ASC, device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения почасовых данных:', error.message);
+        throw error;
+    }
+}
+
+/**
  * Проверяет подключение к базе данных
  */
 async function testConnection() {
@@ -362,5 +413,6 @@ module.exports = {
     getOverallStats,
     getDailyPowerConsumption,
     getDailyPowerDetails,
+    getHourlyData,
     testConnection
 };
