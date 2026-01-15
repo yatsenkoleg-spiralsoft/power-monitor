@@ -157,27 +157,52 @@ async function getDailyChart(deviceId = null, days = 30) {
     const pool = getPool();
     
     try {
-        const query = `
-            SELECT 
-                DATE(timestamp) as date,
-                device_id,
-                device_name,
-                COUNT(*) as total_checks,
-                SUM(is_online) as minutes_online,
-                COUNT(*) - SUM(is_online) as minutes_offline,
-                ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
-                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
-            FROM power_status
-            WHERE timestamp >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-            ${deviceId ? 'AND device_id = ?' : ''}
-            GROUP BY DATE(timestamp), device_id, device_name
-            ORDER BY date DESC, device_id
-        `;
+        let query, params;
         
-        const params = [days];
-        if (deviceId) {
-            params.push(deviceId);
+        // Если days = 0 - запрашиваем только сегодня
+        if (days === 0) {
+            query = `
+                SELECT 
+                    DATE(timestamp) as date,
+                    device_id,
+                    device_name,
+                    COUNT(*) as total_checks,
+                    SUM(is_online) as minutes_online,
+                    COUNT(*) - SUM(is_online) as minutes_offline,
+                    ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                    AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                    SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                FROM power_status
+                WHERE DATE(timestamp) = CURDATE()
+                ${deviceId ? 'AND device_id = ?' : ''}
+                GROUP BY DATE(timestamp), device_id, device_name
+                ORDER BY date DESC, device_id
+            `;
+            
+            params = deviceId ? [deviceId] : [];
+        } else {
+            query = `
+                SELECT 
+                    DATE(timestamp) as date,
+                    device_id,
+                    device_name,
+                    COUNT(*) as total_checks,
+                    SUM(is_online) as minutes_online,
+                    COUNT(*) - SUM(is_online) as minutes_offline,
+                    ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                    AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                    SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                FROM power_status
+                WHERE timestamp >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                ${deviceId ? 'AND device_id = ?' : ''}
+                GROUP BY DATE(timestamp), device_id, device_name
+                ORDER BY date DESC, device_id
+            `;
+            
+            params = [days];
+            if (deviceId) {
+                params.push(deviceId);
+            }
         }
         
         const [rows] = await pool.execute(query, params);
@@ -240,6 +265,80 @@ async function getOverallStats(deviceId = null, startDate = null, endDate = null
 }
 
 /**
+ * Получает суммарное потребление за день (кВт*ч)
+ * Формула: сумма (power_consumption_w * (1/60) часа) для каждой минуты с данными
+ */
+async function getDailyPowerConsumption(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                DATE(timestamp) as date,
+                device_id,
+                device_name,
+                COUNT(CASE WHEN power_consumption_w IS NOT NULL THEN 1 END) as readings_count,
+                AVG(power_consumption_w) as avg_power_w,
+                -- Сумма: каждая минута с потреблением = power_w * (1/60) часа = кВт*ч
+                SUM(power_consumption_w * (1.0 / 60.0)) as total_consumption_kwh
+            FROM power_status
+            WHERE is_online = 1 AND power_consumption_w IS NOT NULL
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(timestamp) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(timestamp) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' GROUP BY DATE(timestamp), device_id, device_name ORDER BY date DESC, device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения суммарного потребления:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает детальные данные о потреблении за день (для графика)
+ */
+async function getDailyPowerDetails(deviceId, date) {
+    const pool = getPool();
+    
+    try {
+        const query = `
+            SELECT 
+                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as time,
+                timestamp,
+                power_consumption_w,
+                is_online
+            FROM power_status
+            WHERE device_id = ? AND DATE(timestamp) = ?
+            ORDER BY timestamp ASC
+        `;
+        
+        const [rows] = await pool.execute(query, [deviceId, date]);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения детальных данных о потреблении:', error.message);
+        throw error;
+    }
+}
+
+/**
  * Проверяет подключение к базе данных
  */
 async function testConnection() {
@@ -261,5 +360,7 @@ module.exports = {
     getDailyDetails,
     getDailyChart,
     getOverallStats,
+    getDailyPowerConsumption,
+    getDailyPowerDetails,
     testConnection
 };

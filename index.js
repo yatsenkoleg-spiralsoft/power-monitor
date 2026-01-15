@@ -166,13 +166,23 @@ app.get('/api/stats', async (req, res) => {
 /**
  * API endpoint для получения данных для графика по дням
  * GET /api/daily?deviceId=xxx&days=30
+ * GET /api/daily?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
  */
 app.get('/api/daily', async (req, res) => {
     try {
         const deviceId = req.query.deviceId || null;
-        const days = parseInt(req.query.days || '30', 10);
+        const { days, startDate, endDate } = req.query;
         
-        const chartData = await db.getDailyChart(deviceId, days);
+        let chartData;
+        
+        // Если указаны startDate и endDate - используем их
+        if (startDate && endDate) {
+            chartData = await db.getStats(deviceId, startDate, endDate);
+        } else {
+            // Иначе используем days
+            const daysNum = days ? parseInt(days, 10) : 30;
+            chartData = await db.getDailyChart(deviceId, daysNum);
+        }
         
         res.json({
             success: true,
