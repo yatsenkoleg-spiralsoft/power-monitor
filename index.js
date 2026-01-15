@@ -263,11 +263,16 @@ app.get('/api/daily-power', async (req, res) => {
         const { deviceId, startDate, endDate, days } = req.query;
         
         // Если указан days - используем его, иначе startDate/endDate
+        // Даты формируются в локальном времени (сервер Cloud Run должен быть в UTC, но MySQL конвертирует в UTC+2)
         let dailyPower;
         if (days) {
             const daysNum = parseInt(days, 10);
-            const endDateStr = new Date().toISOString().split('T')[0];
-            const startDateStr = new Date(Date.now() - daysNum * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            // Используем UTC время, но MySQL конвертирует его в UTC+2 при выборке
+            const now = new Date();
+            const endDateStr = now.toISOString().split('T')[0];
+            const startDateObj = new Date(now);
+            startDateObj.setDate(startDateObj.getDate() - daysNum);
+            const startDateStr = startDateObj.toISOString().split('T')[0];
             dailyPower = await db.getDailyPowerConsumption(deviceId || null, startDateStr, endDateStr);
         } else {
             dailyPower = await db.getDailyPowerConsumption(deviceId || null, startDate || null, endDate || null);

@@ -82,7 +82,7 @@ async function getStats(deviceId = null, startDate = null, endDate = null) {
     try {
         let query = `
             SELECT 
-                DATE(timestamp) as date,
+                DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
                 device_id,
                 device_name,
                 COUNT(*) as total_checks,
@@ -103,16 +103,16 @@ async function getStats(deviceId = null, startDate = null, endDate = null) {
         }
         
         if (startDate) {
-            query += ' AND DATE(timestamp) >= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) >= ?';
             params.push(startDate);
         }
         
         if (endDate) {
-            query += ' AND DATE(timestamp) <= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) <= ?';
             params.push(endDate);
         }
         
-        query += ' GROUP BY DATE(timestamp), device_id, device_name ORDER BY date DESC, device_id';
+        query += ' GROUP BY DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')), device_id, device_name ORDER BY date DESC, device_id';
         
         const [rows] = await pool.execute(query, params);
         return rows;
@@ -131,15 +131,15 @@ async function getDailyDetails(deviceId, date) {
     try {
         const query = `
             SELECT 
-                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as time,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d %H:%i') as time,
                 timestamp,
                 is_online,
                 response_time_ms,
                 power_consumption_w,
                 error_message
             FROM power_status
-            WHERE device_id = ? AND DATE(timestamp) = ?
-            ORDER BY timestamp ASC
+            WHERE device_id = ? AND DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) = ?
+            ORDER BY CONVERT_TZ(timestamp, '+00:00', '+02:00') ASC
         `;
         
         const [rows] = await pool.execute(query, [deviceId, date]);
@@ -163,7 +163,7 @@ async function getDailyChart(deviceId = null, days = 30) {
         if (days === 0) {
             query = `
                 SELECT 
-                    DATE(timestamp) as date,
+                    DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
                     device_id,
                     device_name,
                     COUNT(*) as total_checks,
@@ -173,9 +173,9 @@ async function getDailyChart(deviceId = null, days = 30) {
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                     SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
                 FROM power_status
-                WHERE DATE(timestamp) = CURDATE()
+                WHERE DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) = CURDATE()
                 ${deviceId ? 'AND device_id = ?' : ''}
-                GROUP BY DATE(timestamp), device_id, device_name
+                GROUP BY DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')), device_id, device_name
                 ORDER BY date DESC, device_id
             `;
             
@@ -183,7 +183,7 @@ async function getDailyChart(deviceId = null, days = 30) {
         } else {
             query = `
                 SELECT 
-                    DATE(timestamp) as date,
+                    DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
                     device_id,
                     device_name,
                     COUNT(*) as total_checks,
@@ -193,9 +193,9 @@ async function getDailyChart(deviceId = null, days = 30) {
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                     SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
                 FROM power_status
-                WHERE timestamp >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                WHERE CONVERT_TZ(timestamp, '+00:00', '+02:00') >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
                 ${deviceId ? 'AND device_id = ?' : ''}
-                GROUP BY DATE(timestamp), device_id, device_name
+                GROUP BY DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')), device_id, device_name
                 ORDER BY date DESC, device_id
             `;
             
@@ -245,12 +245,12 @@ async function getOverallStats(deviceId = null, startDate = null, endDate = null
         }
         
         if (startDate) {
-            query += ' AND DATE(timestamp) >= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) >= ?';
             params.push(startDate);
         }
         
         if (endDate) {
-            query += ' AND DATE(timestamp) <= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) <= ?';
             params.push(endDate);
         }
         
@@ -274,7 +274,7 @@ async function getDailyPowerConsumption(deviceId = null, startDate = null, endDa
     try {
         let query = `
             SELECT 
-                DATE(timestamp) as date,
+                DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
                 device_id,
                 device_name,
                 COUNT(CASE WHEN power_consumption_w IS NOT NULL THEN 1 END) as readings_count,
@@ -293,16 +293,16 @@ async function getDailyPowerConsumption(deviceId = null, startDate = null, endDa
         }
         
         if (startDate) {
-            query += ' AND DATE(timestamp) >= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) >= ?';
             params.push(startDate);
         }
         
         if (endDate) {
-            query += ' AND DATE(timestamp) <= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) <= ?';
             params.push(endDate);
         }
         
-        query += ' GROUP BY DATE(timestamp), device_id, device_name ORDER BY date DESC, device_id';
+        query += ' GROUP BY DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')), device_id, device_name ORDER BY date DESC, device_id';
         
         const [rows] = await pool.execute(query, params);
         return rows;
@@ -321,13 +321,13 @@ async function getDailyPowerDetails(deviceId, date) {
     try {
         const query = `
             SELECT 
-                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as time,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d %H:%i') as time,
                 timestamp,
                 power_consumption_w,
                 is_online
             FROM power_status
-            WHERE device_id = ? AND DATE(timestamp) = ?
-            ORDER BY timestamp ASC
+            WHERE device_id = ? AND DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) = ?
+            ORDER BY CONVERT_TZ(timestamp, '+00:00', '+02:00') ASC
         `;
         
         const [rows] = await pool.execute(query, [deviceId, date]);
@@ -347,9 +347,9 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
     try {
         let query = `
             SELECT 
-                DATE_FORMAT(timestamp, '%Y-%m-%d %H:00') as hour,
-                DATE(timestamp) as date,
-                HOUR(timestamp) as hour_num,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d %H:00') as hour,
+                DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
+                HOUR(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as hour_num,
                 device_id,
                 device_name,
                 COUNT(*) as total_checks,
@@ -379,7 +379,7 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
             params.push(endDate);
         }
         
-        query += ' GROUP BY DATE(timestamp), HOUR(timestamp), device_id, device_name ORDER BY date ASC, hour_num ASC, device_id';
+        query += ' GROUP BY DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')), HOUR(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')), device_id, device_name ORDER BY date ASC, hour_num ASC, device_id';
         
         const [rows] = await pool.execute(query, params);
         return rows;
@@ -398,9 +398,9 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
     try {
         let query = `
             SELECT 
-                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as minute,
-                DATE_FORMAT(timestamp, '%Y-%m-%d') as date,
-                DATE_FORMAT(timestamp, '%H:%i') as time,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d %H:%i') as minute,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d') as date,
+                DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%H:%i') as time,
                 timestamp,
                 device_id,
                 device_name,
@@ -420,16 +420,16 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
         }
         
         if (startDate) {
-            query += ' AND DATE(timestamp) >= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) >= ?';
             params.push(startDate);
         }
         
         if (endDate) {
-            query += ' AND DATE(timestamp) <= ?';
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) <= ?';
             params.push(endDate);
         }
         
-        query += ' ORDER BY timestamp ASC, device_id';
+        query += ' ORDER BY CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\') ASC, device_id';
         
         const [rows] = await pool.execute(query, params);
         return rows;
