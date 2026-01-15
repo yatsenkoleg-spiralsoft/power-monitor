@@ -1,0 +1,292 @@
+const express = require('express');
+const tuya = require('./tuya');
+const db = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 8080;
+
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Логирование всех запросов
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+    next();
+});
+
+/**
+ * Основной endpoint для Cloud Scheduler
+ * Вызывается каждую минуту для проверки доступности розеток
+ */
+app.post('/monitor', async (req, res) => {
+    try {
+        console.log('Начало мониторинга розеток...');
+        
+        // Получаем список устройств
+        const devices = tuya.getDevices();
+        console.log(`Найдено устройств для мониторинга: ${devices.length}`);
+        
+        // Проверяем каждое устройство параллельно
+        const checkPromises = devices.map(async (device) => {
+            try {
+                console.log(`Проверяю устройство: ${device.name} (${device.id})`);
+                const result = await tuya.checkDeviceAvailability(device.id, device.name);
+                
+                // Сохраняем результат в БД
+                await db.savePowerStatus(
+                    result.deviceId,
+                    result.deviceName,
+                    result.isOnline,
+                    result.responseTimeMs,
+                    result.powerConsumptionW,
+                    result.error
+                );
+                
+                const powerInfo = result.powerConsumptionW !== null ? ` ${result.powerConsumptionW.toFixed(2)}Вт` : '';
+                console.log(`${device.name}: ${result.isOnline ? 'Онлайн (свет есть)' : 'Оффлайн (света нет)'}${powerInfo} ${result.responseTimeMs ? `(${result.responseTimeMs}ms)` : ''}`);
+                
+                return result;
+            } catch (error) {
+                console.error(`Ошибка проверки устройства ${device.name}:`, error.message);
+                // Сохраняем ошибку в БД
+                try {
+                    await db.savePowerStatus(
+                        device.id,
+                        device.name,
+                        false,
+                        null,
+                        null,
+                        error.message
+                    );
+                } catch (dbError) {
+                    console.error(`Не удалось сохранить ошибку в БД: ${dbError.message}`);
+                }
+                return {
+                    deviceId: device.id,
+                    deviceName: device.name,
+                    isOnline: false,
+                    error: error.message
+                };
+            }
+        });
+        
+        const results = await Promise.all(checkPromises);
+        
+        // Подсчитываем статистику
+        const onlineCount = results.filter(r => r.isOnline).length;
+        const offlineCount = results.length - onlineCount;
+        
+        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}`);
+        
+        res.json({
+            success: true,
+            timestamp: new Date().toISOString(),
+            devicesChecked: results.length,
+            online: onlineCount,
+            offline: offlineCount,
+            results: results.map(r => ({
+                deviceId: r.deviceId,
+                deviceName: r.deviceName,
+                isOnline: r.isOnline,
+                responseTimeMs: r.responseTimeMs,
+                powerConsumptionW: r.powerConsumptionW
+            }))
+        });
+    } catch (error) {
+        console.error('Критическая ошибка мониторинга:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * GET endpoint для ручной проверки (для тестирования)
+ */
+app.get('/monitor', async (req, res) => {
+    try {
+        console.log('Ручная проверка устройств...');
+        
+        const devices = tuya.getDevices();
+        const results = await Promise.all(
+            devices.map(device => tuya.checkDeviceAvailability(device.id, device.name))
+        );
+        
+        res.json({
+            success: true,
+            timestamp: new Date().toISOString(),
+            results
+        });
+    } catch (error) {
+        console.error('Ошибка ручной проверки:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint для получения статистики
+ * GET /api/stats?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ */
+app.get('/api/stats', async (req, res) => {
+    try {
+        const { deviceId, startDate, endDate } = req.query;
+        
+        const stats = await db.getStats(deviceId || null, startDate || null, endDate || null);
+        
+        res.json({
+            success: true,
+            data: stats
+        });
+    } catch (error) {
+        console.error('Ошибка получения статистики:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint для получения данных для графика по дням
+ * GET /api/daily?deviceId=xxx&days=30
+ */
+app.get('/api/daily', async (req, res) => {
+    try {
+        const deviceId = req.query.deviceId || null;
+        const days = parseInt(req.query.days || '30', 10);
+        
+        const chartData = await db.getDailyChart(deviceId, days);
+        
+        res.json({
+            success: true,
+            data: chartData
+        });
+    } catch (error) {
+        console.error('Ошибка получения данных графика:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint для получения детальных данных за день
+ * GET /api/daily-details?deviceId=xxx&date=YYYY-MM-DD
+ */
+app.get('/api/daily-details', async (req, res) => {
+    try {
+        const { deviceId, date } = req.query;
+        
+        if (!deviceId || !date) {
+            return res.status(400).json({
+                success: false,
+                error: 'Требуются параметры deviceId и date (YYYY-MM-DD)'
+            });
+        }
+        
+        const details = await db.getDailyDetails(deviceId, date);
+        
+        res.json({
+            success: true,
+            data: details
+        });
+    } catch (error) {
+        console.error('Ошибка получения детальных данных:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * API endpoint для получения общей статистики
+ * GET /api/overall?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ */
+app.get('/api/overall', async (req, res) => {
+    try {
+        const { deviceId, startDate, endDate } = req.query;
+        
+        const stats = await db.getOverallStats(deviceId || null, startDate || null, endDate || null);
+        
+        res.json({
+            success: true,
+            data: stats
+        });
+    } catch (error) {
+        console.error('Ошибка получения общей статистики:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Health check endpoint
+ */
+app.get('/health', async (req, res) => {
+    try {
+        const dbConnected = await db.testConnection();
+        
+        res.json({
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+            database: dbConnected ? 'connected' : 'disconnected'
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Root endpoint - информация о сервисе
+ */
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Tuya Power Monitor',
+        version: '1.0.0',
+        endpoints: {
+            monitor: 'POST /monitor - Проверка доступности розеток (для Cloud Scheduler)',
+            stats: 'GET /api/stats - Статистика за период',
+            daily: 'GET /api/daily - Данные для графика по дням',
+            dailyDetails: 'GET /api/daily-details - Детальные данные за день',
+            overall: 'GET /api/overall - Общая статистика',
+            powerConsumption: 'GET /api/power-consumption - Данные о потреблении за период',
+            dailyPower: 'GET /api/daily-power - Суммарное потребление за день',
+            powerDetails: 'GET /api/power-details - Детальные данные о потреблении за день',
+            health: 'GET /health - Проверка состояния сервиса'
+        }
+    });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('Получен SIGTERM, закрываю подключения...');
+    await db.closePool();
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    console.log('Получен SIGINT, закрываю подключения...');
+    await db.closePool();
+    process.exit(0);
+});
+
+// Запуск сервера
+app.listen(PORT, () => {
+    console.log(`Сервис мониторинга запущен на порту ${PORT}`);
+    console.log(`Окружение: ${process.env.NODE_ENV || 'development'}`);
+});
+
+module.exports = app;

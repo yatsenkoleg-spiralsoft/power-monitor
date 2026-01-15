@@ -1,0 +1,265 @@
+const mysql = require('mysql2/promise');
+
+// Конфигурация подключения к MySQL из переменных окружения (обязательные параметры)
+const dbConfig = {
+    host: process.env.MYSQL_HOST,
+    port: parseInt(process.env.MYSQL_PORT || '3306', 10),
+    database: process.env.MYSQL_DATABASE,
+    user: process.env.MYSQL_USER,
+    password: process.env.MYSQL_PASSWORD,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0
+};
+
+// Проверка обязательных переменных окружения
+if (!dbConfig.host || !dbConfig.database || !dbConfig.user || !dbConfig.password) {
+    throw new Error('Требуются переменные окружения: MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD');
+}
+
+// Создаем пул подключений
+let pool = null;
+
+/**
+ * Получает или создает пул подключений к MySQL
+ */
+function getPool() {
+    if (!pool) {
+        pool = mysql.createPool(dbConfig);
+        console.log('Пул подключений к MySQL создан');
+    }
+    return pool;
+}
+
+/**
+ * Закрывает пул подключений (для graceful shutdown)
+ */
+async function closePool() {
+    if (pool) {
+        await pool.end();
+        pool = null;
+        console.log('Пул подключений к MySQL закрыт');
+    }
+}
+
+/**
+ * Записывает результат проверки устройства в базу данных
+ */
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, errorMessage = null) {
+    const pool = getPool();
+    
+    try {
+        const query = `
+            INSERT INTO power_status 
+            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, error_message)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?)
+        `;
+        
+        const [result] = await pool.execute(query, [
+            deviceId,
+            deviceName,
+            isOnline ? 1 : 0,
+            responseTimeMs,
+            powerConsumptionW,
+            errorMessage
+        ]);
+        
+        return result.insertId;
+    } catch (error) {
+        console.error('Ошибка записи в power_status:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает статистику за период
+ */
+async function getStats(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                DATE(timestamp) as date,
+                device_id,
+                device_name,
+                COUNT(*) as total_checks,
+                SUM(is_online) as minutes_online,
+                COUNT(*) - SUM(is_online) as minutes_offline,
+                AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
+                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+            FROM power_status
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(timestamp) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(timestamp) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' GROUP BY DATE(timestamp), device_id, device_name ORDER BY date DESC, device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения статистики:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает детальные данные за день (по часам)
+ */
+async function getDailyDetails(deviceId, date) {
+    const pool = getPool();
+    
+    try {
+        const query = `
+            SELECT 
+                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as time,
+                timestamp,
+                is_online,
+                response_time_ms,
+                power_consumption_w,
+                error_message
+            FROM power_status
+            WHERE device_id = ? AND DATE(timestamp) = ?
+            ORDER BY timestamp ASC
+        `;
+        
+        const [rows] = await pool.execute(query, [deviceId, date]);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения детальных данных:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает данные для графика по дням
+ */
+async function getDailyChart(deviceId = null, days = 30) {
+    const pool = getPool();
+    
+    try {
+        const query = `
+            SELECT 
+                DATE(timestamp) as date,
+                device_id,
+                device_name,
+                COUNT(*) as total_checks,
+                SUM(is_online) as minutes_online,
+                COUNT(*) - SUM(is_online) as minutes_offline,
+                ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+            FROM power_status
+            WHERE timestamp >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+            ${deviceId ? 'AND device_id = ?' : ''}
+            GROUP BY DATE(timestamp), device_id, device_name
+            ORDER BY date DESC, device_id
+        `;
+        
+        const params = [days];
+        if (deviceId) {
+            params.push(deviceId);
+        }
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения данных для графика:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает общую статистику (за все время или за период)
+ */
+async function getOverallStats(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                device_id,
+                device_name,
+                COUNT(*) as total_checks,
+                SUM(is_online) as total_minutes_online,
+                COUNT(*) - SUM(is_online) as total_minutes_offline,
+                ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                ROUND(SUM(is_online) / 60.0, 2) as hours_online,
+                ROUND((COUNT(*) - SUM(is_online)) / 60.0, 2) as hours_offline,
+                AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
+                AVG(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                SUM(CASE WHEN power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+            FROM power_status
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(timestamp) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(timestamp) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' GROUP BY device_id, device_name ORDER BY device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения общей статистики:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Проверяет подключение к базе данных
+ */
+async function testConnection() {
+    try {
+        const pool = getPool();
+        const [rows] = await pool.execute('SELECT 1 as test');
+        return rows[0].test === 1;
+    } catch (error) {
+        console.error('Ошибка подключения к MySQL:', error.message);
+        return false;
+    }
+}
+
+module.exports = {
+    getPool,
+    closePool,
+    savePowerStatus,
+    getStats,
+    getDailyDetails,
+    getDailyChart,
+    getOverallStats,
+    testConnection
+};
