@@ -33,23 +33,31 @@ app.post('/monitor', async (req, res) => {
                 console.log(`Проверяю устройство: ${device.name} (${device.id})`);
                 const result = await tuya.checkDeviceAvailability(device.id, device.name);
                 
-                // Сохраняем результат в БД
-                await db.savePowerStatus(
-                    result.deviceId,
-                    result.deviceName,
-                    result.isOnline,
-                    result.responseTimeMs,
-                    result.powerConsumptionW,
-                    result.error
-                );
+                // Сохраняем результат в БД (но не прерываем выполнение при ошибке БД)
+                try {
+                    await db.savePowerStatus(
+                        result.deviceId,
+                        result.deviceName,
+                        result.isOnline,
+                        result.responseTimeMs,
+                        result.powerConsumptionW,
+                        result.error
+                    );
+                } catch (dbError) {
+                    // Логируем ошибку БД, но продолжаем с реальными данными устройства
+                    console.error(`Ошибка сохранения в БД для ${device.name}:`, dbError.message);
+                    // НЕ меняем result.isOnline - оставляем реальное значение от Tuya API
+                }
                 
                 const powerInfo = result.powerConsumptionW !== null ? ` ${result.powerConsumptionW.toFixed(2)}Вт` : '';
                 console.log(`${device.name}: ${result.isOnline ? 'Онлайн (свет есть)' : 'Оффлайн (света нет)'}${powerInfo} ${result.responseTimeMs ? `(${result.responseTimeMs}ms)` : ''}`);
                 
                 return result;
             } catch (error) {
+                // Этот catch только для ошибок проверки устройства (Tuya API), не для ошибок БД
                 console.error(`Ошибка проверки устройства ${device.name}:`, error.message);
-                // Сохраняем ошибку в БД
+                // При ошибке проверки устройства - считаем его оффлайн
+                // Пытаемся сохранить ошибку в БД, но не критично если не получится
                 try {
                     await db.savePowerStatus(
                         device.id,
@@ -66,6 +74,7 @@ app.post('/monitor', async (req, res) => {
                     deviceId: device.id,
                     deviceName: device.name,
                     isOnline: false,
+                    powerConsumptionW: null,
                     error: error.message
                 };
             }
