@@ -390,6 +390,56 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
 }
 
 /**
+ * Получает поминутные данные за период (для графика)
+ */
+async function getMinuteData(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i') as minute,
+                DATE_FORMAT(timestamp, '%Y-%m-%d') as date,
+                DATE_FORMAT(timestamp, '%H:%i') as time,
+                timestamp,
+                device_id,
+                device_name,
+                is_online,
+                CASE WHEN is_online = 1 THEN 100 ELSE 0 END as availability_percent,
+                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w ELSE NULL END as avg_power_w,
+                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END as total_consumption_kwh
+            FROM power_status
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(timestamp) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(timestamp) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' ORDER BY timestamp ASC, device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения поминутных данных:', error.message);
+        throw error;
+    }
+}
+
+/**
  * Проверяет подключение к базе данных
  */
 async function testConnection() {
@@ -414,5 +464,6 @@ module.exports = {
     getDailyPowerConsumption,
     getDailyPowerDetails,
     getHourlyData,
+    getMinuteData,
     testConnection
 };

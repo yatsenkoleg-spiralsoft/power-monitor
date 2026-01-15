@@ -347,6 +347,36 @@ app.get('/api/hourly', async (req, res) => {
 });
 
 /**
+ * API endpoint для получения поминутных данных за период (для графика)
+ * GET /api/minute?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ */
+app.get('/api/minute', async (req, res) => {
+    try {
+        const { deviceId, startDate, endDate } = req.query;
+        
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                success: false,
+                error: 'Требуются параметры startDate и endDate (YYYY-MM-DD)'
+            });
+        }
+        
+        const minuteData = await db.getMinuteData(deviceId || null, startDate, endDate);
+        
+        res.json({
+            success: true,
+            data: minuteData
+        });
+    } catch (error) {
+        console.error('Ошибка получения поминутных данных:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * Health check endpoint
  */
 app.get('/health', async (req, res) => {
@@ -383,6 +413,7 @@ app.get('/', (req, res) => {
             dailyPower: 'GET /api/daily-power - Суммарное потребление за день',
             powerDetails: 'GET /api/power-details - Детальные данные о потреблении за день',
             hourly: 'GET /api/hourly - Почасовые данные за период',
+            minute: 'GET /api/minute - Поминутные данные за период',
             health: 'GET /health - Проверка состояния сервиса'
         }
     });
