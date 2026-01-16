@@ -207,14 +207,26 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         
         if (response.data && response.data.success) {
             // Извлекаем данные о потреблении
-            const statusMap = response.data.result.reduce((acc, { code, value }) => {
+            // Проверяем, что result существует и является массивом
+            const result = response.data.result || [];
+            const statusMap = Array.isArray(result) ? result.reduce((acc, { code, value }) => {
                 acc[code] = value;
                 return acc;
-            }, {});
+            }, {}) : {};
             
             // Получаем потребление (cur_power приходит в десятых долях ватта, делим на 10)
-            const powerValue = statusMap['cur_power'] || null;
-            const powerConsumptionW = powerValue !== null ? powerValue / 10 : null;
+            // Также проверяем другие возможные коды для потребления
+            const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
+            const powerConsumptionW = powerValue !== null && powerValue !== undefined ? powerValue / 10 : null;
+            
+            // Логируем для отладки
+            console.log(`[${deviceId}] Данные о потреблении:`, {
+                statusMap,
+                powerValue,
+                powerConsumptionW,
+                hasCurPower: 'cur_power' in statusMap,
+                resultLength: result.length
+            });
             
             // Проверяем реальный онлайн-статус из информации об устройстве
             // Поле online может быть true/false или отсутствовать
