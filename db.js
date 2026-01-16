@@ -47,14 +47,14 @@ async function closePool() {
 /**
  * Записывает результат проверки устройства в базу данных
  */
-async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, errorMessage = null) {
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, errorMessage = null) {
     const pool = getPool();
     
     try {
         const query = `
             INSERT INTO power_status 
-            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, error_message)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?)
+            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, voltage_v, error_message)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await pool.execute(query, [
@@ -63,6 +63,7 @@ async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = 
             isOnline ? 1 : 0,
             responseTimeMs,
             powerConsumptionW,
+            voltageV,
             errorMessage
         ]);
         
@@ -362,7 +363,8 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
                 ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                 -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
-                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
+                AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v
             FROM power_status
             WHERE 1=1
         `;
@@ -420,7 +422,8 @@ async function getTenMinuteData(deviceId = null, startDate = null, endDate = nul
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                 -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
                 -- Используем COALESCE чтобы вернуть 0 если нет данных
-                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
+                AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v
             FROM power_status
             WHERE 1=1
         `;
@@ -471,7 +474,8 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 CASE WHEN is_online = 1 THEN 100 ELSE 0 END as availability_percent,
                 CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w ELSE NULL END as avg_power_w,
                 -- Потребление за минуту: power_w * (1/60) часа / 1000 = кВт·ч
-                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END as total_consumption_kwh
+                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END as total_consumption_kwh,
+                CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v ELSE NULL END as voltage_v
             FROM power_status
             WHERE 1=1
         `;

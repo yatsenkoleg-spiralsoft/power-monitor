@@ -13,7 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Логирование всех запросов
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+    // console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
     next();
 });
 
@@ -32,14 +32,15 @@ app.post('/monitor', async (req, res) => {
         // Проверяем каждое устройство параллельно
         const checkPromises = devices.map(async (device) => {
             try {
-                console.log(`Проверяю устройство: ${device.name} (${device.id})`);
+                // console.log(`Проверяю устройство: ${device.name} (${device.id})`);
                 const result = await tuya.checkDeviceAvailability(device.id, device.name);
                 
                 // Сохраняем результат в БД (но не прерываем выполнение при ошибке БД)
                 try {
-                    // Важно: если устройство офлайн, потребление должно быть NULL
+                    // Важно: если устройство офлайн, потребление и напряжение должны быть NULL
                     // Даже если API вернул старое значение - не сохраняем его для офлайн устройств
                     const powerConsumptionToSave = result.isOnline ? result.powerConsumptionW : null;
+                    const voltageToSave = result.isOnline ? result.voltageV : null;
                     
                     await db.savePowerStatus(
                         result.deviceId,
@@ -47,6 +48,7 @@ app.post('/monitor', async (req, res) => {
                         result.isOnline,
                         result.responseTimeMs,
                         powerConsumptionToSave,
+                        voltageToSave,
                         result.error
                     );
                 } catch (dbError) {
@@ -69,6 +71,7 @@ app.post('/monitor', async (req, res) => {
                         device.id,
                         device.name,
                         false,
+                        null,
                         null,
                         null,
                         error.message
@@ -123,7 +126,7 @@ app.post('/monitor', async (req, res) => {
  */
 app.get('/monitor', async (req, res) => {
     try {
-        console.log('Ручная проверка устройств...');
+        // console.log('Ручная проверка устройств...');
         
         const devices = tuya.getDevices();
         const results = await Promise.all(

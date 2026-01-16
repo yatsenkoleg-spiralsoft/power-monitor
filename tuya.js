@@ -47,11 +47,11 @@ async function getAccessToken(forceRefresh = false) {
             return accessToken;
         }
         // Токен истек или нет информации о времени истечения
-        console.log("Токен истек, запрашиваю новый...");
+        // console.log("Токен истек, запрашиваю новый...");
         accessToken = null;
     }
     
-    console.log("Запрашиваю новый токен доступа Tuya...");
+    // console.log("Запрашиваю новый токен доступа Tuya...");
     try {
         const method = 'GET';
         const path = '/v1.0/token';
@@ -75,7 +75,7 @@ async function getAccessToken(forceRefresh = false) {
             // Токен обычно действует 7200 секунд (2 часа), но обновляем за 5 минут до истечения
             const expiresIn = (response.data.result.expire_time || 7200) * 1000; // Конвертируем в миллисекунды
             tokenExpiryTime = Date.now() + expiresIn - (5 * 60 * 1000); // Обновляем за 5 минут до истечения
-            console.log('Токен Tuya успешно получен, истекает через', expiresIn / 1000, 'секунд');
+            // console.log('Токен Tuya успешно получен, истекает через', expiresIn / 1000, 'секунд');
             return accessToken;
         }
         throw new Error(response.data.msg || 'Unknown error');
@@ -132,7 +132,7 @@ async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retr
             
             // Ошибка "token invalid" (code 1010) или "token expired" (code 1011)
             if ((errorCode === 1010 || errorCode === 1011) && retryCount < MAX_RETRIES) {
-                console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
+                // console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
                 accessToken = null; // Сбрасываем токен
                 tokenExpiryTime = null;
                 // Повторяем запрос с новым токеном
@@ -155,7 +155,7 @@ async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retr
             const errorMsg = error.response.data.msg;
             
             if ((errorCode === 1010 || errorCode === 1011) && retryCount < MAX_RETRIES) {
-                console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
+                // console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
                 accessToken = null;
                 tokenExpiryTime = null;
                 return makeTuyaRequest(path, method, query, body, retryCount + 1);
@@ -194,7 +194,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
     try {
         // Получаем информацию об устройстве для проверки реального онлайн-статуса
         const deviceInfo = await getDeviceInfo(deviceId);
-        console.log(`[${deviceId}] Информация об устройстве:`, JSON.stringify(deviceInfo, null, 2));
+        // console.log(`[${deviceId}] Информация об устройстве:`, JSON.stringify(deviceInfo, null, 2));
         
         // Получаем статус устройства через makeTuyaRequest (с автоматическим обновлением токена)
         const path = `/v1.0/devices/${deviceId}/status`;
@@ -203,7 +203,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         const responseTime = Date.now() - startTime;
         
         // Логируем полный ответ API для диагностики
-        console.log(`[${deviceId}] Полный ответ Tuya API (status):`, JSON.stringify(response.data, null, 2));
+        // console.log(`[${deviceId}] Полный ответ Tuya API (status):`, JSON.stringify(response.data, null, 2));
         
         if (response.data && response.data.success) {
             // Извлекаем данные о потреблении
@@ -219,14 +219,18 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
             const powerConsumptionW = powerValue !== null && powerValue !== undefined ? powerValue / 10 : null;
             
+            // Получаем напряжение (cur_voltage приходит в десятых долях вольта, делим на 10)
+            const voltageValue = statusMap['cur_voltage'] || null;
+            const voltageV = voltageValue !== null && voltageValue !== undefined ? voltageValue / 10 : null;
+            
             // Логируем для отладки
-            console.log(`[${deviceId}] Данные о потреблении:`, {
-                statusMap,
-                powerValue,
-                powerConsumptionW,
-                hasCurPower: 'cur_power' in statusMap,
-                resultLength: result.length
-            });
+            // console.log(`[${deviceId}] Данные о потреблении:`, {
+            //     statusMap,
+            //     powerValue,
+            //     powerConsumptionW,
+            //     hasCurPower: 'cur_power' in statusMap,
+            //     resultLength: result.length
+            // });
             
             // Проверяем реальный онлайн-статус из информации об устройстве
             // Поле online может быть true/false или отсутствовать
@@ -242,38 +246,39 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                 // Если явно указано online === false - устройство офлайн
                 if (deviceOnlineStatus === false) {
                     isActuallyOnline = false;
-                    console.log(`[${deviceId}] Устройство офлайн (deviceInfo.online = false)`);
+                    // console.log(`[${deviceId}] Устройство офлайн (deviceInfo.online = false)`);
                 } else if (deviceOnlineStatus === true) {
                     isActuallyOnline = true;
-                    console.log(`[${deviceId}] Устройство онлайн (deviceInfo.online = true)`);
+                    // console.log(`[${deviceId}] Устройство онлайн (deviceInfo.online = true)`);
                 } else {
                     // Если online не указано, но есть active_time - можно проверить свежесть данных
                     // Пока считаем онлайн, если API ответил успешно
                     isActuallyOnline = true;
-                    console.log(`[${deviceId}] Статус online не указан, используем статус API ответа`);
+                    // console.log(`[${deviceId}] Статус online не указан, используем статус API ответа`);
                 }
             } else {
                 // Если не удалось получить deviceInfo, используем успешность ответа API
-                console.log(`[${deviceId}] Не удалось получить deviceInfo, используем статус API ответа`);
+                // console.log(`[${deviceId}] Не удалось получить deviceInfo, используем статус API ответа`);
                 isActuallyOnline = true;
             }
             
             // Логируем анализ
-            console.log(`[${deviceId}] Анализ данных:`, {
-                cur_power: statusMap['cur_power'],
-                powerConsumptionW,
-                switch_1: statusMap['switch_1'],
-                deviceInfo_online: deviceOnlineStatus,
-                active_time: activeTime,
-                isActuallyOnline,
-                hasResult: !!response.data.result,
-                resultLength: response.data.result ? response.data.result.length : 0
-            });
+            // console.log(`[${deviceId}] Анализ данных:`, {
+            //     cur_power: statusMap['cur_power'],
+            //     powerConsumptionW,
+            //     switch_1: statusMap['switch_1'],
+            //     deviceInfo_online: deviceOnlineStatus,
+            //     active_time: activeTime,
+            //     isActuallyOnline,
+            //     hasResult: !!response.data.result,
+            //     resultLength: response.data.result ? response.data.result.length : 0
+            // });
             
             return {
                 isOnline: isActuallyOnline,
                 responseTimeMs: responseTime,
                 powerConsumptionW,
+                voltageV,
                 error: null,
                 deviceId,
                 deviceName
@@ -284,6 +289,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                 isOnline: false,
                 responseTimeMs: null,
                 powerConsumptionW: null,
+                voltageV: null,
                 error: response.data?.msg || 'Unknown API error',
                 deviceId,
                 deviceName
@@ -305,6 +311,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             isOnline: false,
             responseTimeMs: null,
             powerConsumptionW: null,
+            voltageV: null,
             error: errorMessage,
             deviceId,
             deviceName
