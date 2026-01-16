@@ -352,6 +352,36 @@ app.get('/api/hourly', async (req, res) => {
 });
 
 /**
+ * API endpoint для получения данных агрегированных по 10 минут за период (для графика)
+ * GET /api/ten-minute?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ */
+app.get('/api/ten-minute', async (req, res) => {
+    try {
+        const { deviceId, startDate, endDate } = req.query;
+        
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                success: false,
+                error: 'Требуются параметры startDate и endDate (YYYY-MM-DD)'
+            });
+        }
+        
+        const tenMinuteData = await db.getTenMinuteData(deviceId || null, startDate, endDate);
+        
+        res.json({
+            success: true,
+            data: tenMinuteData
+        });
+    } catch (error) {
+        console.error('Ошибка получения данных по 10 минут:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+/**
  * API endpoint для получения поминутных данных за период (для графика)
  * GET /api/minute?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
  */

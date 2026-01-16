@@ -357,7 +357,8 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
                 COUNT(*) - SUM(is_online) as minutes_offline,
                 ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0), 0) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
@@ -385,6 +386,64 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
         return rows;
     } catch (error) {
         console.error('Ошибка получения почасовых данных:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Получает данные агрегированные по 10 минут за период (для графика)
+ */
+async function getTenMinuteData(deviceId = null, startDate = null, endDate = null) {
+    const pool = getPool();
+    
+    try {
+        let query = `
+            SELECT 
+                DATE_FORMAT(
+                    DATE_ADD(
+                        DATE_FORMAT(CONVERT_TZ(timestamp, '+00:00', '+02:00'), '%Y-%m-%d %H:%i'),
+                        INTERVAL -MINUTE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) % 10 MINUTE
+                    ),
+                    '%Y-%m-%d %H:%i'
+                ) as ten_minute,
+                DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) as date,
+                device_id,
+                device_name,
+                COUNT(*) as total_checks,
+                SUM(is_online) as minutes_online,
+                COUNT(*) - SUM(is_online) as minutes_offline,
+                ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
+                AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
+                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 (чтобы получить кВт·ч)
+                -- Используем COALESCE чтобы вернуть 0 если нет данных
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0), 0) as total_consumption_kwh
+            FROM power_status
+            WHERE 1=1
+        `;
+        
+        const params = [];
+        
+        if (deviceId) {
+            query += ' AND device_id = ?';
+            params.push(deviceId);
+        }
+        
+        if (startDate) {
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) >= ?';
+            params.push(startDate);
+        }
+        
+        if (endDate) {
+            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) <= ?';
+            params.push(endDate);
+        }
+        
+        query += ' GROUP BY DATE_FORMAT(DATE_ADD(DATE_FORMAT(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\'), \'%Y-%m-%d %H:%i\'), INTERVAL -MINUTE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')) % 10 MINUTE), \'%Y-%m-%d %H:%i\'), DATE(CONVERT_TZ(timestamp, \'+00:00\', \'+02:00\')), device_id, device_name ORDER BY ten_minute ASC, device_id';
+        
+        const [rows] = await pool.execute(query, params);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения данных по 10 минут:', error.message);
         throw error;
     }
 }
@@ -464,6 +523,7 @@ module.exports = {
     getDailyPowerConsumption,
     getDailyPowerDetails,
     getHourlyData,
+    getTenMinuteData,
     getMinuteData,
     testConnection
 };
