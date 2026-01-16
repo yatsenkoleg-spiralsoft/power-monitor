@@ -90,7 +90,8 @@ async function getStats(deviceId = null, startDate = null, endDate = null) {
                 COUNT(*) - SUM(is_online) as minutes_offline,
                 AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
+                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
@@ -171,7 +172,8 @@ async function getDailyChart(deviceId = null, days = 30) {
                     COUNT(*) - SUM(is_online) as minutes_offline,
                     ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                    -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
+                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh
                 FROM power_status
                 WHERE DATE(CONVERT_TZ(timestamp, '+00:00', '+02:00')) = CURDATE()
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -191,7 +193,8 @@ async function getDailyChart(deviceId = null, days = 30) {
                     COUNT(*) - SUM(is_online) as minutes_offline,
                     ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                    -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
+                    SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh
                 FROM power_status
                 WHERE CONVERT_TZ(timestamp, '+00:00', '+02:00') >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -232,7 +235,8 @@ async function getOverallStats(deviceId = null, startDate = null, endDate = null
                 ROUND((COUNT(*) - SUM(is_online)) / 60.0, 2) as hours_offline,
                 AVG(CASE WHEN response_time_ms IS NOT NULL THEN response_time_ms END) as avg_response_time_ms,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END) as total_consumption_kwh
+                -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
+                SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
@@ -279,8 +283,8 @@ async function getDailyPowerConsumption(deviceId = null, startDate = null, endDa
                 device_name,
                 COUNT(CASE WHEN power_consumption_w IS NOT NULL THEN 1 END) as readings_count,
                 AVG(power_consumption_w) as avg_power_w,
-                -- Сумма: каждая минута с потреблением = power_w * (1/60) часа = кВт*ч
-                SUM(power_consumption_w * (1.0 / 60.0)) as total_consumption_kwh
+                -- Сумма: каждая минута с потреблением = power_w * (1/60) часа / 1000 = кВт*ч
+                SUM(power_consumption_w * (1.0 / 60.0) / 1000.0) as total_consumption_kwh
             FROM power_status
             WHERE is_online = 1 AND power_consumption_w IS NOT NULL
         `;
@@ -466,7 +470,8 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 is_online,
                 CASE WHEN is_online = 1 THEN 100 ELSE 0 END as availability_percent,
                 CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w ELSE NULL END as avg_power_w,
-                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) ELSE 0 END as total_consumption_kwh
+                -- Потребление за минуту: power_w * (1/60) часа / 1000 = кВт·ч
+                CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
