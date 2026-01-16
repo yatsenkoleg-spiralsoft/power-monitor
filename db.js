@@ -361,8 +361,8 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
                 COUNT(*) - SUM(is_online) as minutes_offline,
                 ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60
-                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0), 0) as total_consumption_kwh
+                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
@@ -418,9 +418,9 @@ async function getTenMinuteData(deviceId = null, startDate = null, endDate = nul
                 COUNT(*) - SUM(is_online) as minutes_offline,
                 ROUND((SUM(is_online) / COUNT(*)) * 100, 2) as availability_percent,
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
-                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 (чтобы получить кВт·ч)
+                -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
                 -- Используем COALESCE чтобы вернуть 0 если нет данных
-                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0), 0) as total_consumption_kwh
+                COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh
             FROM power_status
             WHERE 1=1
         `;
