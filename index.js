@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const tuya = require('./tuya');
 const db = require('./db');
+const ecoflow = require('./ecoflow');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -29,6 +30,37 @@ app.post('/monitor', async (req, res) => {
         const devices = tuya.getDevices();
         console.log(`Найдено устройств для мониторинга: ${devices.length}`);
         
+        // Получаем уровень заряда экофлошки параллельно с проверкой розеток
+        const ecoflowPromise = (async () => {
+            try {
+                const chargeLevel = await ecoflow.getEcoFlowChargeLevel();
+                if (chargeLevel !== null) {
+                    // Сохраняем уровень заряда в БД с device_id = 'ecoflow'
+                    try {
+                        await db.savePowerStatus(
+                            'ecoflow',
+                            'Экофлошка',
+                            true, // Всегда онлайн, если получили данные
+                            null, // Нет response_time_ms для экофлошки
+                            null, // Нет потребления
+                            null, // Нет напряжения
+                            chargeLevel, // Уровень заряда
+                            null // Нет ошибки
+                        );
+                        console.log(`Экофлошка: уровень заряда ${chargeLevel.toFixed(1)}%`);
+                    } catch (dbError) {
+                        console.error(`Ошибка сохранения уровня заряда экофлошки в БД:`, dbError.message);
+                    }
+                } else {
+                    console.log('Экофлошка: не удалось получить уровень заряда');
+                }
+                return chargeLevel;
+            } catch (error) {
+                console.error('Ошибка получения уровня заряда экофлошки:', error.message);
+                return null;
+            }
+        })();
+        
         // Проверяем каждое устройство параллельно
         const checkPromises = devices.map(async (device) => {
             try {
@@ -49,6 +81,7 @@ app.post('/monitor', async (req, res) => {
                         result.responseTimeMs,
                         powerConsumptionToSave,
                         voltageToSave,
+                        null, // ecoflowChargePercent - только для экофлошки
                         result.error
                     );
                 } catch (dbError) {
@@ -74,6 +107,7 @@ app.post('/monitor', async (req, res) => {
                         null,
                         null,
                         null,
+                        null, // ecoflowChargePercent
                         error.message
                     );
                 } catch (dbError) {
@@ -89,13 +123,17 @@ app.post('/monitor', async (req, res) => {
             }
         });
         
-        const results = await Promise.all(checkPromises);
+        // Ждем завершения проверки розеток и получения заряда экофлошки
+        const [results, ecoflowCharge] = await Promise.all([
+            Promise.all(checkPromises),
+            ecoflowPromise
+        ]);
         
         // Подсчитываем статистику
         const onlineCount = results.filter(r => r.isOnline).length;
         const offlineCount = results.length - onlineCount;
         
-        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}`);
+        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло: ${ecoflowCharge.toFixed(1)}%` : ''}`);
         
         res.json({
             success: true,
@@ -109,7 +147,8 @@ app.post('/monitor', async (req, res) => {
                 isOnline: r.isOnline,
                 responseTimeMs: r.responseTimeMs,
                 powerConsumptionW: r.powerConsumptionW
-            }))
+            })),
+            ecoflowCharge: ecoflowCharge
         });
     } catch (error) {
         console.error('Критическая ошибка мониторинга:', error);

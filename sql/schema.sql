@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS `power_status` (
   `is_online` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = доступно (свет есть), 0 = недоступно (света нет)',
   `response_time_ms` INT UNSIGNED DEFAULT NULL COMMENT 'Время отклика в миллисекундах',
   `power_consumption_w` DECIMAL(10,2) DEFAULT NULL COMMENT 'Текущее потребление энергии в ваттах',
+  `voltage_v` DECIMAL(5,2) DEFAULT NULL COMMENT 'Напряжение в сети в вольтах',
+  `ecoflow_charge_percent` DECIMAL(5,2) DEFAULT NULL COMMENT 'Уровень заряда экофлошки в процентах',
   `error_message` TEXT DEFAULT NULL COMMENT 'Сообщение об ошибке, если есть',
   PRIMARY KEY (`id`),
   KEY `idx_timestamp` (`timestamp`),
