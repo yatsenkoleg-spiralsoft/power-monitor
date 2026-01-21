@@ -1,8 +1,12 @@
 const axios = require('axios');
+const crypto = require('crypto');
 
 // --- Настройки EcoFlow ---
 const ECOFLOW_EMAIL = process.env.ECOFLOW_EMAIL;
-const HASHED_PASSWORD = process.env.ECOFLOW_HASHED_PASSWORD;
+let HASHED_PASSWORD = process.env.ECOFLOW_HASHED_PASSWORD;
+if (!HASHED_PASSWORD && process.env.ECOFLOW_PASSWORD) {
+    HASHED_PASSWORD = crypto.createHash('sha256').update(process.env.ECOFLOW_PASSWORD, 'utf8').digest('hex');
+}
 const BASE_URL = process.env.ECOFLOW_BASE_URL || 'https://api-e.ecoflow.com';
 const SPACE_ID = process.env.ECOFLOW_SPACE_ID;
 
@@ -34,70 +38,83 @@ async function fetchEcoFlowStatus(forceRefresh = false) {
     }
 
     inFlightFetch = (async () => {
-        const baseHeaders = {
-            'Content-Type': 'application/json',
-            platform: 'android',
-            lang: 'ru-ru',
-        };
+        try {
+            const baseHeaders = {
+                'Content-Type': 'application/json',
+                platform: 'android',
+                lang: 'ru-ru',
+            };
 
-        const loginPayload = {
-            email: ECOFLOW_EMAIL,
-            password2: HASHED_PASSWORD,
-            scene: 'IOT_APP',
-            userType: 'ECOFLOW',
-            appVersion: '6.8.5.1742',
-            countryCode: 'UA',
-        };
+            const loginPayload = {
+                email: ECOFLOW_EMAIL,
+                password2: HASHED_PASSWORD,
+                scene: 'IOT_APP',
+                userType: 'ECOFLOW',
+                appVersion: '6.8.5.1742',
+                countryCode: 'UA',
+            };
 
-        const loginResponse = await axios.post(`${BASE_URL}/auth/login`, loginPayload, {
-            headers: baseHeaders,
-        });
+            const loginResponse = await axios.post(`${BASE_URL}/auth/login`, loginPayload, {
+                headers: baseHeaders,
+            });
 
-        const token = loginResponse.data?.data?.token;
-        const userId = loginResponse.data?.data?.user?.userId;
+            const token = loginResponse.data?.data?.token;
+            const userId = loginResponse.data?.data?.user?.userId;
 
-        if (!token || !userId) {
-            throw new Error('Не удалось получить токен аутентификации EcoFlow');
+            if (!token || !userId) {
+                const d = loginResponse.data;
+                const apiMsg = d?.msg || d?.message;
+                const apiCode = d?.code;
+                const extra = [apiMsg, apiCode != null ? `код ${apiCode}` : null].filter(Boolean).join('; ');
+                throw new Error('Не удалось получить токен аутентификации EcoFlow' + (extra ? ` (${extra})` : ''));
+            }
+
+            const authHeaders = {
+                ...baseHeaders,
+                Authorization: `Bearer ${token}`,
+            };
+
+            const devicesResponse = await axios.get(`${BASE_URL}/app/user/device`, {
+                headers: authHeaders,
+            });
+
+            const boundDevices = devicesResponse.data?.data?.bound;
+            if (!boundDevices || Object.keys(boundDevices).length === 0) {
+                throw new Error('Устройства EcoFlow не найдены для указанного аккаунта');
+            }
+
+            const deviceSn = Object.keys(boundDevices)[0];
+
+            const statusPayload = { sns: [deviceSn], spaceId: SPACE_ID };
+            const statusResponse = await axios.post(
+                `${BASE_URL}/app/space/card/device/status/init`,
+                statusPayload,
+                { headers: authHeaders }
+            );
+
+            const payloadRaw = statusResponse.data?.data?.[0]?.payload;
+            let deviceState = {};
+            if (payloadRaw) {
+                deviceState = typeof payloadRaw === 'string' ? JSON.parse(payloadRaw) : payloadRaw;
+            }
+
+            cachedState = deviceState;
+            cachedAt = Date.now();
+            cachedDeviceSn = deviceSn;
+
+            return {
+                deviceState,
+                lastUpdate: new Date(cachedAt),
+                deviceSn,
+            };
+        } catch (err) {
+            if (err.response) {
+                const d = err.response.data;
+                const msg = (typeof d === 'object' && d != null) ? (d.msg || d.message || d.error) : (d != null ? String(d) : err.message);
+                throw new Error(`EcoFlow API ${err.response.status}: ${msg || err.message}`);
+            }
+            throw err;
         }
-
-        const authHeaders = {
-            ...baseHeaders,
-            Authorization: `Bearer ${token}`,
-        };
-
-        const devicesResponse = await axios.get(`${BASE_URL}/app/user/device`, {
-            headers: authHeaders,
-        });
-
-        const boundDevices = devicesResponse.data?.data?.bound;
-        if (!boundDevices || Object.keys(boundDevices).length === 0) {
-            throw new Error('Устройства EcoFlow не найдены для указанного аккаунта');
-        }
-
-        const deviceSn = Object.keys(boundDevices)[0];
-
-        const statusPayload = { sns: [deviceSn], spaceId: SPACE_ID };
-        const statusResponse = await axios.post(
-            `${BASE_URL}/app/space/card/device/status/init`,
-            statusPayload,
-            { headers: authHeaders }
-        );
-
-        const payloadRaw = statusResponse.data?.data?.[0]?.payload;
-        let deviceState = {};
-        if (payloadRaw) {
-            deviceState = typeof payloadRaw === 'string' ? JSON.parse(payloadRaw) : payloadRaw;
-        }
-
-        cachedState = deviceState;
-        cachedAt = Date.now();
-        cachedDeviceSn = deviceSn;
-
-        return {
-            deviceState,
-            lastUpdate: new Date(cachedAt),
-            deviceSn,
-        };
     })();
 
     try {
@@ -114,6 +131,9 @@ async function fetchEcoFlowStatus(forceRefresh = false) {
  * @returns {Promise<number|null>} - уровень заряда от 0 до 100 или null при ошибке
  */
 async function getEcoFlowChargeLevel(forceRefresh = false) {
+    if (!ECOFLOW_EMAIL || !HASHED_PASSWORD || !SPACE_ID) {
+        return null; // EcoFlow не настроен — не логируем
+    }
     try {
         const { deviceState } = await fetchEcoFlowStatus(forceRefresh);
         
