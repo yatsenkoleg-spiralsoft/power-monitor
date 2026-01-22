@@ -133,7 +133,7 @@ app.post('/monitor', async (req, res) => {
         const onlineCount = results.filter(r => r.isOnline).length;
         const offlineCount = results.length - onlineCount;
         
-        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло: ${ecoflowCharge.toFixed(1)}%` : ''}`);
+        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло (API): ${ecoflowCharge.toFixed(1)}%` : ''}`);
         
         res.json({
             success: true,
