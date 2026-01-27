@@ -30,33 +30,36 @@ app.post('/monitor', async (req, res) => {
         const devices = tuya.getDevices();
         console.log(`Найдено устройств для мониторинга: ${devices.length}`);
         
-        // Получаем уровень заряда экофлошки параллельно с проверкой розеток
+        // Получаем заряд, напряжение и потребление экофлошки параллельно с проверкой розеток (один fetch)
         const ecoflowPromise = (async () => {
             try {
-                const chargeLevel = await ecoflow.getEcoFlowChargeLevel();
-                if (chargeLevel !== null) {
-                    // Сохраняем уровень заряда в БД с device_id = 'ecoflow'
+                const { chargeLevel, voltageV, consumptionW } = await ecoflow.getEcoFlowVoltageAndConsumption();
+                if (chargeLevel !== null || voltageV !== null || consumptionW !== null) {
                     try {
                         await db.savePowerStatus(
                             'ecoflow',
                             'Экофлошка',
-                            true, // Всегда онлайн, если получили данные
-                            null, // Нет response_time_ms для экофлошки
-                            null, // Нет потребления
-                            null, // Нет напряжения
-                            chargeLevel, // Уровень заряда
-                            null // Нет ошибки
+                            true,
+                            null,
+                            consumptionW,
+                            voltageV,
+                            chargeLevel,
+                            null
                         );
-                        console.log(`Экофлошка: уровень заряда ${chargeLevel.toFixed(1)}%`);
+                        const parts = [];
+                        if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
+                        if (voltageV !== null) parts.push(`напряжение ${voltageV.toFixed(1)} В`);
+                        if (consumptionW !== null) parts.push(`потребление ${consumptionW} Вт`);
+                        if (parts.length) console.log(`Экофлошка: ${parts.join(', ')}`);
                     } catch (dbError) {
-                        console.error(`Ошибка сохранения уровня заряда экофлошки в БД:`, dbError.message);
+                        console.error(`Ошибка сохранения данных экофлошки в БД:`, dbError.message);
                     }
                 } else {
-                    console.log('Экофлошка: не удалось получить уровень заряда');
+                    console.log('Экофлошка: не удалось получить данные');
                 }
                 return chargeLevel;
             } catch (error) {
-                console.error('Ошибка получения уровня заряда экофлошки:', error.message);
+                console.error('Ошибка получения данных экофлошки:', error.message);
                 return null;
             }
         })();

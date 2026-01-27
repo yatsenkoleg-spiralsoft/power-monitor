@@ -82,6 +82,60 @@ async function fetchEcoFlowStatus(forceRefresh = false) {
 }
 
 /**
+ * Извлекает напряжение в сети (В) и потребление на выходах 220 В (Вт) из deviceState.
+ * Напряжение: inv.acInVol в мВ → делим на 1000.
+ * Потребление: inv.outputWatts или pd.wattsOutSum (Вт).
+ * @param {Record<string, any>} deviceState
+ * @returns {{ voltageV: number|null, consumptionW: number|null }}
+ */
+function getVoltageAndConsumptionFromState(deviceState) {
+    if (!deviceState || typeof deviceState !== 'object') {
+        return { voltageV: null, consumptionW: null };
+    }
+    let voltageV = null;
+    const acInVolMv = deviceState['inv.acInVol'];
+    if (acInVolMv !== undefined && acInVolMv !== null) {
+        const v = Number(acInVolMv) / 1000;
+        if (!isNaN(v)) voltageV = v;
+    }
+    let consumptionW = null;
+    const outW = deviceState['inv.outputWatts'] ?? deviceState['pd.wattsOutSum'];
+    if (outW !== undefined && outW !== null) {
+        const w = Number(outW);
+        if (!isNaN(w)) consumptionW = w;
+    }
+    return { voltageV, consumptionW };
+}
+
+/**
+ * Один вызов fetch — возвращает заряд, напряжение и потребление экофлошки.
+ * @param {boolean} forceRefresh - принудительное обновление (игнорировать кэш)
+ * @returns {Promise<{ chargeLevel: number|null, voltageV: number|null, consumptionW: number|null }>}
+ */
+async function getEcoFlowVoltageAndConsumption(forceRefresh = false) {
+    if (!ECOFLOW_ACCESS_KEY || !ECOFLOW_SECRET_KEY || !ECOFLOW_DEVICE_SN) {
+        return { chargeLevel: null, voltageV: null, consumptionW: null };
+    }
+    try {
+        const { deviceState } = await fetchEcoFlowStatus(forceRefresh);
+        const soc = deviceState['pd.soc'] ??
+            deviceState['bms_bmsStatus.soc'] ??
+            deviceState['bms_emsStatus.lcdShowSoc'] ??
+            deviceState.battery_soc;
+        let chargeLevel = null;
+        if (soc !== undefined && soc !== null) {
+            const n = Number(soc);
+            if (!isNaN(n)) chargeLevel = Math.max(0, Math.min(100, n));
+        }
+        const { voltageV, consumptionW } = getVoltageAndConsumptionFromState(deviceState);
+        return { chargeLevel, voltageV, consumptionW };
+    } catch (error) {
+        console.error('Ошибка получения данных экофлошки:', error.message);
+        return { chargeLevel: null, voltageV: null, consumptionW: null };
+    }
+}
+
+/**
  * Получает уровень заряда экофлошки в процентах (0-100)
  * @param {boolean} forceRefresh - принудительное обновление (игнорировать кэш)
  * @returns {Promise<number|null>} - уровень заряда от 0 до 100 или null при ошибке
@@ -122,5 +176,6 @@ async function getEcoFlowChargeLevel(forceRefresh = false) {
 
 module.exports = {
     getEcoFlowChargeLevel,
-    fetchEcoFlowStatus // Экспортируем для возможного использования в будущем
+    getEcoFlowVoltageAndConsumption,
+    fetchEcoFlowStatus
 };
