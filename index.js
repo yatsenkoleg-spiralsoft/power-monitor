@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // С 27.01.2025 19:24 (Киев) данные с физической «Розетки 1» пишем в БД как «Обогреватель»
-const SOCKET1_HEATER_CUTOFF_UTC = new Date('2025-01-27T17:24:00.000Z'); // 19:24 UTC+2
+const SOCKET1_HEATER_CUTOFF_UTC = new Date('2026-01-27T17:24:00.000Z'); // 19:24 UTC+2
 const SOCKET1_DEVICE_ID = 'bf3c70a960958bcf11ruml';
 const HEATER_DEVICE_ID = 'obogrevatel';
 const HEATER_DEVICE_NAME = 'Обогреватель';
