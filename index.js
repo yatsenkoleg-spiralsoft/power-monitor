@@ -7,6 +7,12 @@ const ecoflow = require('./ecoflow');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// С 27.01.2025 19:24 (Киев) данные с физической «Розетки 1» пишем в БД как «Обогреватель»
+const SOCKET1_HEATER_CUTOFF_UTC = new Date('2025-01-27T17:24:00.000Z'); // 19:24 UTC+2
+const SOCKET1_DEVICE_ID = 'bf3c70a960958bcf11ruml';
+const HEATER_DEVICE_ID = 'obogrevatel';
+const HEATER_DEVICE_NAME = 'Обогреватель';
+
 // Middleware
 app.use(cors()); // Разрешаем CORS для всех запросов
 app.use(express.json());
@@ -77,9 +83,16 @@ app.post('/monitor', async (req, res) => {
                     const powerConsumptionToSave = result.isOnline ? result.powerConsumptionW : null;
                     const voltageToSave = result.isOnline ? result.voltageV : null;
                     
+                    // С 27.01.2025 19:24 данные с «Розетки 1» пишем как «Обогреватель»
+                    const now = new Date();
+                    const saveDeviceId = (result.deviceId === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
+                        ? HEATER_DEVICE_ID : result.deviceId;
+                    const saveDeviceName = (result.deviceId === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
+                        ? HEATER_DEVICE_NAME : result.deviceName;
+                    
                     await db.savePowerStatus(
-                        result.deviceId,
-                        result.deviceName,
+                        saveDeviceId,
+                        saveDeviceName,
                         result.isOnline,
                         result.responseTimeMs,
                         powerConsumptionToSave,
@@ -103,9 +116,14 @@ app.post('/monitor', async (req, res) => {
                 // При ошибке проверки устройства - считаем его оффлайн
                 // Пытаемся сохранить ошибку в БД, но не критично если не получится
                 try {
+                    const now = new Date();
+                    const saveDeviceId = (device.id === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
+                        ? HEATER_DEVICE_ID : device.id;
+                    const saveDeviceName = (device.id === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
+                        ? HEATER_DEVICE_NAME : device.name;
                     await db.savePowerStatus(
-                        device.id,
-                        device.name,
+                        saveDeviceId,
+                        saveDeviceName,
                         false,
                         null,
                         null,
