@@ -241,13 +241,14 @@ function parseStatusMap(statusMap) {
 
 async function checkDeviceAvailability(deviceId, deviceName = null) {
     const startTime = Date.now();
+    let dataSource = 'нет данных';
     
     try {
         const deviceInfo = await getDeviceInfo(deviceId);
         let statusMap = {};
         
         if (deviceId === TH_SENSOR_DEVICE_ID) {
-            // Градусник: /status и iot-03/status возвращают пусто или 2003 — сразу берём данные из shadow/properties (без codes).
+            // Градусник: только shadow/properties (без /status и iot-03).
             try {
                 const pathShadow = `/v2.0/cloud/thing/${deviceId}/shadow/properties`;
                 const resShadow = await makeTuyaRequest(pathShadow, 'GET', {});
@@ -255,32 +256,40 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                     resShadow.data.result.properties.forEach(p => {
                         if (p.code != null && p.value !== undefined) statusMap[String(p.code)] = p.value;
                     });
+                    dataSource = '/v2.0/cloud/thing/{id}/shadow/properties';
                 }
             } catch (err) {
                 // shadow/properties ошибка — оставляем statusMap пустым
             }
         } else {
-            const path = `/v1.0/devices/${deviceId}/status`;
-            const response = await makeTuyaRequest(path, 'GET');
+            const pathStatus = `/v1.0/devices/${deviceId}/status`;
+            const response = await makeTuyaRequest(pathStatus, 'GET');
             if (response.data && response.data.success && response.data.result) {
                 statusMap = buildStatusMap(response.data.result);
+                dataSource = '/v1.0/devices/{id}/status';
             } else {
                 const code = response.data?.code;
                 const msg = (response.data?.msg || '').toLowerCase();
                 const isFunctionNotSupport = code === 2003 || msg.includes('function not support');
                 if (isFunctionNotSupport) {
                     try {
-                        const resIot03 = await makeTuyaRequest(`/v1.0/iot-03/devices/${deviceId}/status`, 'GET');
+                        const pathIot03 = `/v1.0/iot-03/devices/${deviceId}/status`;
+                        const resIot03 = await makeTuyaRequest(pathIot03, 'GET');
                         if (resIot03.data && resIot03.data.success && resIot03.data.result && resIot03.data.result.length) {
                             statusMap = buildStatusMap(resIot03.data.result);
+                            dataSource = '/v1.0/iot-03/devices/{id}/status';
                         }
                     } catch (err) {}
                 }
                 if (Object.keys(statusMap).length === 0 && deviceInfo && Array.isArray(deviceInfo.status) && deviceInfo.status.length > 0) {
                     statusMap = buildStatusMap(deviceInfo.status);
+                    dataSource = 'getDeviceInfo.status';
                 }
             }
         }
+        
+        const label = deviceName || deviceId;
+        console.log(`[Tuya] ${label}: данные из ${dataSource}`);
         
         const responseTime = Date.now() - startTime;
         const { powerConsumptionW, voltageV, temperatureC, humidityPercent } = parseStatusMap(statusMap);
