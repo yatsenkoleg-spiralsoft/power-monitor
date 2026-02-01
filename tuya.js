@@ -207,24 +207,35 @@ function buildStatusMap(statusList) {
 
 /**
  * Извлекает из statusMap потребление (Вт), напряжение (В), температуру (°C), влажность (%).
- * Коды Tuya: cur_power/cur_power_1, cur_voltage; va_temperature/current_temperature/temperature; va_humidity/humidity.
+ * Розетки: cur_power, cur_voltage; va_temperature, va_humidity.
+ * Zigbee T&H Sensor (Tuya): DP1 = Temperature, DP2 = Humidity — см. https://developer.tuya.com/en/docs/connect-subdevices-to-gateways/zigbee-sensor?id=K9ik6zvmhrfh6
+ * Температура Zigbee: int16, часто в centidegrees (1/100 °C), например 2350 → 23.50 °C.
+ * Влажность Zigbee: 0–10000 (0.01%), например 5500 → 55%.
  */
 function parseStatusMap(statusMap) {
     const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
     const powerConsumptionW = powerValue !== null && powerValue !== undefined ? Number(powerValue) / 10 : null;
     const voltageValue = statusMap['cur_voltage'] || null;
     const voltageV = voltageValue !== null && voltageValue !== undefined ? Number(voltageValue) / 10 : null;
-    const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? null;
+    const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? statusMap['1'] ?? null;
     let temperatureC = null;
     if (tempRaw !== null && tempRaw !== undefined) {
         const v = Number(tempRaw);
-        if (!isNaN(v)) temperatureC = v > 100 ? v / 10 : v;
+        if (!isNaN(v)) {
+            if (Math.abs(v) > 200) temperatureC = v / 100;
+            else if (v > 100) temperatureC = v / 10;
+            else temperatureC = v;
+        }
     }
-    const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? null;
+    const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? statusMap['2'] ?? null;
     let humidityPercent = null;
     if (humRaw !== null && humRaw !== undefined) {
         const v = Number(humRaw);
-        if (!isNaN(v)) humidityPercent = v > 100 ? v / 10 : v;
+        if (!isNaN(v)) {
+            if (v > 1000) humidityPercent = v / 100;
+            else if (v > 100) humidityPercent = v / 10;
+            else humidityPercent = v;
+        }
     }
     return { powerConsumptionW, voltageV, temperatureC, humidityPercent };
 }
