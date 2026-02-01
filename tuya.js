@@ -191,134 +191,113 @@ async function getDeviceInfo(deviceId) {
  */
 const TH_SENSOR_DEVICE_ID = 'bf9fe4c9ccac6ea697dvgo';
 
+/**
+ * Строит объект { code: value } из массива статуса Tuya (result или deviceInfo.status).
+ * Элементы могут быть { code, value } или с другими именами полей в зависимости от API.
+ */
+function buildStatusMap(statusList) {
+    if (!statusList || !Array.isArray(statusList)) return {};
+    return statusList.reduce((acc, item) => {
+        const code = item.code != null ? item.code : item.dp_id;
+        const value = item.value != null ? item.value : item.dp_value;
+        if (code !== undefined && code !== null) acc[String(code)] = value;
+        return acc;
+    }, {});
+}
+
+/**
+ * Извлекает из statusMap потребление (Вт), напряжение (В), температуру (°C), влажность (%).
+ * Коды Tuya: cur_power/cur_power_1, cur_voltage; va_temperature/current_temperature/temperature; va_humidity/humidity.
+ */
+function parseStatusMap(statusMap) {
+    const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
+    const powerConsumptionW = powerValue !== null && powerValue !== undefined ? Number(powerValue) / 10 : null;
+    const voltageValue = statusMap['cur_voltage'] || null;
+    const voltageV = voltageValue !== null && voltageValue !== undefined ? Number(voltageValue) / 10 : null;
+    const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? null;
+    let temperatureC = null;
+    if (tempRaw !== null && tempRaw !== undefined) {
+        const v = Number(tempRaw);
+        if (!isNaN(v)) temperatureC = v > 100 ? v / 10 : v;
+    }
+    const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? null;
+    let humidityPercent = null;
+    if (humRaw !== null && humRaw !== undefined) {
+        const v = Number(humRaw);
+        if (!isNaN(v)) humidityPercent = v > 100 ? v / 10 : v;
+    }
+    return { powerConsumptionW, voltageV, temperatureC, humidityPercent };
+}
+
 async function checkDeviceAvailability(deviceId, deviceName = null) {
     const startTime = Date.now();
     
     try {
-        // Получаем информацию об устройстве для проверки реального онлайн-статуса
         const deviceInfo = await getDeviceInfo(deviceId);
         if (deviceId === TH_SENSOR_DEVICE_ID) {
             console.log('[Tuya DEBUG] T & H Sensor — ответ API getDeviceInfo:', JSON.stringify(deviceInfo, null, 2));
         }
         
-        // Получаем статус устройства через makeTuyaRequest (с автоматическим обновлением токена)
-        const path = `/v1.0/devices/${deviceId}/status`;
-        const response = await makeTuyaRequest(path, 'GET');
+        let statusMap = {};
+        let response = null;
         
-        const responseTime = Date.now() - startTime;
+        const path = `/v1.0/devices/${deviceId}/status`;
+        response = await makeTuyaRequest(path, 'GET');
         
         if (deviceId === TH_SENSOR_DEVICE_ID) {
             console.log('[Tuya DEBUG] T & H Sensor — ответ API /status:', JSON.stringify(response.data, null, 2));
         }
         
-        if (response.data && response.data.success) {
-            // Извлекаем данные о потреблении
-            // Проверяем, что result существует и является массивом
-            const result = response.data.result || [];
-            const statusMap = Array.isArray(result) ? result.reduce((acc, { code, value }) => {
-                acc[code] = value;
-                return acc;
-            }, {}) : {};
-            
-            // Получаем потребление (cur_power приходит в десятых долях ватта, делим на 10)
-            // Также проверяем другие возможные коды для потребления
-            const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
-            const powerConsumptionW = powerValue !== null && powerValue !== undefined ? powerValue / 10 : null;
-            
-            // Получаем напряжение (cur_voltage приходит в десятых долях вольта, делим на 10)
-            const voltageValue = statusMap['cur_voltage'] || null;
-            const voltageV = voltageValue !== null && voltageValue !== undefined ? voltageValue / 10 : null;
-            
-            // Температура и влажность (датчики T&H: va_temperature, current_temperature; va_humidity, humidity)
-            const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? null;
-            let temperatureC = null;
-            if (tempRaw !== null && tempRaw !== undefined) {
-                const v = Number(tempRaw);
-                if (!isNaN(v)) temperatureC = v > 100 ? v / 10 : v; // иногда приходит в 0.1°C
-            }
-            const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? null;
-            let humidityPercent = null;
-            if (humRaw !== null && humRaw !== undefined) {
-                const v = Number(humRaw);
-                if (!isNaN(v)) humidityPercent = v > 100 ? v / 10 : v;
-            }
-            
-            // Логируем для отладки
-            // console.log(`[${deviceId}] Данные о потреблении:`, {
-            //     statusMap,
-            //     powerValue,
-            //     powerConsumptionW,
-            //     hasCurPower: 'cur_power' in statusMap,
-            //     resultLength: result.length
-            // });
-            
-            // Проверяем реальный онлайн-статус из информации об устройстве
-            // Поле online может быть true/false или отсутствовать
-            // Также проверяем active_time - если устройство недавно было активно, значит онлайн
-            const deviceOnlineStatus = deviceInfo?.online;
-            const activeTime = deviceInfo?.active_time;
-            
-            // Если deviceInfo успешно получена и online === false - устройство точно офлайн
-            // Если online === true или не указано, но API ответил успешно - считаем онлайн
-            let isActuallyOnline = true;
-            
-            if (deviceInfo !== null) {
-                // Если явно указано online === false - устройство офлайн
-                if (deviceOnlineStatus === false) {
-                    isActuallyOnline = false;
-                    // console.log(`[${deviceId}] Устройство офлайн (deviceInfo.online = false)`);
-                } else if (deviceOnlineStatus === true) {
-                    isActuallyOnline = true;
-                    // console.log(`[${deviceId}] Устройство онлайн (deviceInfo.online = true)`);
-                } else {
-                    // Если online не указано, но есть active_time - можно проверить свежесть данных
-                    // Пока считаем онлайн, если API ответил успешно
-                    isActuallyOnline = true;
-                    // console.log(`[${deviceId}] Статус online не указан, используем статус API ответа`);
-                }
-            } else {
-                // Если не удалось получить deviceInfo, используем успешность ответа API
-                // console.log(`[${deviceId}] Не удалось получить deviceInfo, используем статус API ответа`);
-                isActuallyOnline = true;
-            }
-            
-            // Логируем анализ
-            // console.log(`[${deviceId}] Анализ данных:`, {
-            //     cur_power: statusMap['cur_power'],
-            //     powerConsumptionW,
-            //     switch_1: statusMap['switch_1'],
-            //     deviceInfo_online: deviceOnlineStatus,
-            //     active_time: activeTime,
-            //     isActuallyOnline,
-            //     hasResult: !!response.data.result,
-            //     resultLength: response.data.result ? response.data.result.length : 0
-            // });
-            
-            return {
-                isOnline: isActuallyOnline,
-                responseTimeMs: responseTime,
-                powerConsumptionW,
-                voltageV,
-                temperatureC,
-                humidityPercent,
-                error: null,
-                deviceId,
-                deviceName
-            };
+        if (response.data && response.data.success && response.data.result) {
+            statusMap = buildStatusMap(response.data.result);
         } else {
-            // Ошибка в ответе API
-            return {
-                isOnline: false,
-                responseTimeMs: null,
-                powerConsumptionW: null,
-                voltageV: null,
-                temperatureC: null,
-                humidityPercent: null,
-                error: response.data?.msg || 'Unknown API error',
-                deviceId,
-                deviceName
-            };
+            const code = response.data?.code;
+            const msg = (response.data?.msg || '').toLowerCase();
+            const isFunctionNotSupport = code === 2003 || msg.includes('function not support');
+            if (isFunctionNotSupport) {
+                const pathIot03 = `/v1.0/iot-03/devices/${deviceId}/status`;
+                try {
+                    const resIot03 = await makeTuyaRequest(pathIot03, 'GET');
+                    if (deviceId === TH_SENSOR_DEVICE_ID) {
+                        console.log('[Tuya DEBUG] T & H Sensor — ответ API iot-03/status:', JSON.stringify(resIot03.data, null, 2));
+                    }
+                    if (resIot03.data && resIot03.data.success && resIot03.data.result) {
+                        statusMap = buildStatusMap(resIot03.data.result);
+                    }
+                } catch (err) {
+                    if (deviceId === TH_SENSOR_DEVICE_ID) {
+                        console.log('[Tuya DEBUG] T & H Sensor — iot-03/status ошибка:', err.message);
+                    }
+                }
+            }
+            if (Object.keys(statusMap).length === 0 && deviceInfo && Array.isArray(deviceInfo.status) && deviceInfo.status.length > 0) {
+                statusMap = buildStatusMap(deviceInfo.status);
+            }
         }
+        
+        const responseTime = Date.now() - startTime;
+        const { powerConsumptionW, voltageV, temperatureC, humidityPercent } = parseStatusMap(statusMap);
+        
+        let isActuallyOnline = true;
+        if (deviceInfo != null) {
+            if (deviceInfo.online === false) isActuallyOnline = false;
+            else if (deviceInfo.online === true) isActuallyOnline = true;
+            else isActuallyOnline = true;
+        } else {
+            isActuallyOnline = true;
+        }
+        
+        return {
+            isOnline: isActuallyOnline,
+            responseTimeMs: responseTime,
+            powerConsumptionW,
+            voltageV,
+            temperatureC,
+            humidityPercent,
+            error: null,
+            deviceId,
+            deviceName
+        };
     } catch (error) {
         const responseTime = Date.now() - startTime;
         
