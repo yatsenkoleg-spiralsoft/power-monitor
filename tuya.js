@@ -216,14 +216,22 @@ function parseStatusMap(statusMap) {
     const powerConsumptionW = powerValue !== null && powerValue !== undefined ? Number(powerValue) / 10 : null;
     const voltageValue = statusMap['cur_voltage'] || null;
     const voltageV = voltageValue !== null && voltageValue !== undefined ? Number(voltageValue) / 10 : null;
-    const tempRaw = statusMap['temp_current'] ?? statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? statusMap['1'] ?? null;
+    // temp_current (shadow API) — всегда в 0.1°C, делим только на 10. Остальные коды — Zigbee/другие форматы.
+    const tempCurrentRaw = statusMap['temp_current'];
     let temperatureC = null;
-    if (tempRaw !== null && tempRaw !== undefined) {
-        const v = Number(tempRaw);
-        if (!isNaN(v)) {
-            if (Math.abs(v) > 200) temperatureC = v / 100;
-            else if (v > 100) temperatureC = v / 10;
-            else temperatureC = v;
+    if (tempCurrentRaw !== null && tempCurrentRaw !== undefined) {
+        const v = Number(tempCurrentRaw);
+        if (!isNaN(v)) temperatureC = v / 10;
+    }
+    if (temperatureC == null) {
+        const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? statusMap['1'] ?? null;
+        if (tempRaw !== null && tempRaw !== undefined) {
+            const v = Number(tempRaw);
+            if (!isNaN(v)) {
+                if (Math.abs(v) > 200) temperatureC = v / 100;
+                else if (v > 100) temperatureC = v / 10;
+                else temperatureC = v;
+            }
         }
     }
     const humRaw = statusMap['humidity_value'] ?? statusMap['va_humidity'] ?? statusMap['humidity'] ?? statusMap['2'] ?? null;
