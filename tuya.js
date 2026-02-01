@@ -12,7 +12,7 @@ const DEVICE_IDS = process.env.DEVICE_IDS
     : {
         'Розетка 1': 'bf3c70a960958bcf11ruml',
         'Розетка 2': 'bfcbd371e1af7827f9sj79',
-        'T & H Sensor': 'bf9fe4c9ccac6ea697dvgo'
+        'T & H Sensor': 'bf2bf2252c37a041b0tbvs'
     };
 
 let accessToken = null;
@@ -189,7 +189,7 @@ async function getDeviceInfo(deviceId) {
  * Проверяет доступность устройства через Tuya API
  * Возвращает объект с информацией о статусе
  */
-const TH_SENSOR_DEVICE_ID = 'bf9fe4c9ccac6ea697dvgo';
+const TH_SENSOR_DEVICE_ID = 'bf2bf2252c37a041b0tbvs';
 
 /**
  * Строит объект { code: value } из массива статуса Tuya (result или deviceInfo.status).
@@ -297,7 +297,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         }
         
         const label = deviceName || deviceId;
-        console.log(`[Tuya] ${label}: данные из ${dataSource}`);
+        //console.log(`[Tuya] ${label}: данные из ${dataSource}`);
         
         const responseTime = Date.now() - startTime;
         const { powerConsumptionW, voltageV, temperatureC, humidityPercent } = parseStatusMap(statusMap);
