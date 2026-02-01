@@ -91,7 +91,7 @@ async function getAccessToken(forceRefresh = false) {
 /**
  * Выполняет запрос с автоматическим обновлением токена при ошибке "token invalid"
  */
-async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retryCount = 0) {
+async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retryCount = 0, extraHeaders = {}) {
     const MAX_RETRIES = 1;
     
     try {
@@ -103,7 +103,8 @@ async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retr
             'access_token': token,
             'sign': sign,
             't': t,
-            'sign_method': 'HMAC-SHA256'
+            'sign_method': 'HMAC-SHA256',
+            ...extraHeaders
         };
         
         const config = {
@@ -137,7 +138,7 @@ async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retr
                 accessToken = null; // Сбрасываем токен
                 tokenExpiryTime = null;
                 // Повторяем запрос с новым токеном
-                return makeTuyaRequest(path, method, query, body, retryCount + 1);
+                return makeTuyaRequest(path, method, query, body, retryCount + 1, extraHeaders);
             }
             
             // Rate limiting (429) - обычно не должно происходить при мониторинге каждую минуту
@@ -159,7 +160,7 @@ async function makeTuyaRequest(path, method = 'GET', query = {}, body = {}, retr
                 // console.log(`Токен истек (code: ${errorCode}, msg: ${errorMsg}), обновляю и повторяю запрос...`);
                 accessToken = null;
                 tokenExpiryTime = null;
-                return makeTuyaRequest(path, method, query, body, retryCount + 1);
+                return makeTuyaRequest(path, method, query, body, retryCount + 1, extraHeaders);
             }
         }
         throw error;
@@ -257,9 +258,14 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         
         if (deviceId === TH_SENSOR_DEVICE_ID) {
             // Градусник: только shadow/properties (без /status и iot-03).
+            // Добавляем cache-bust: уникальный query и заголовки, чтобы уменьшить шанс ответа из кеша Tuya.
             try {
                 const pathShadow = `/v2.0/cloud/thing/${deviceId}/shadow/properties`;
-                const resShadow = await makeTuyaRequest(pathShadow, 'GET', {});
+                const queryShadow = { _: String(Date.now()) };
+                const resShadow = await makeTuyaRequest(pathShadow, 'GET', queryShadow, {}, 0, {
+                    'Cache-Control': 'no-cache, no-store',
+                    'Pragma': 'no-cache'
+                });
                 if (resShadow.data && resShadow.data.success && resShadow.data.result && resShadow.data.result.properties) {
                     resShadow.data.result.properties.forEach(p => {
                         if (p.code != null && p.value !== undefined) statusMap[String(p.code)] = p.value;
