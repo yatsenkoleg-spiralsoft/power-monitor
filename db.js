@@ -47,14 +47,14 @@ async function closePool() {
 /**
  * Записывает результат проверки устройства в базу данных
  */
-async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null) {
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null) {
     const pool = getPool();
     
     try {
         const query = `
             INSERT INTO power_status 
-            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, voltage_v, ecoflow_charge_percent, error_message)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await pool.execute(query, [
@@ -65,6 +65,8 @@ async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = 
             powerConsumptionW,
             voltageV,
             ecoflowChargePercent,
+            temperatureC,
+            humidityPercent,
             errorMessage
         ]);
         
@@ -372,7 +374,9 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
                 -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
                 COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
                 AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
+                AVG(temperature_c) as temperature_c,
+                AVG(humidity_percent) as humidity_percent
             FROM power_status
             WHERE 1=1
         `;
@@ -432,7 +436,9 @@ async function getTenMinuteData(deviceId = null, startDate = null, endDate = nul
                 -- Используем COALESCE чтобы вернуть 0 если нет данных
                 COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
                 AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
+                AVG(temperature_c) as temperature_c,
+                AVG(humidity_percent) as humidity_percent
             FROM power_status
             WHERE 1=1
         `;
@@ -485,7 +491,9 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 -- Потребление за минуту: power_w * (1/60) часа / 1000 = кВт·ч
                 CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END as total_consumption_kwh,
                 CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v ELSE NULL END as voltage_v,
-                CASE WHEN device_id = 'ecoflow' THEN ecoflow_charge_percent ELSE NULL END as ecoflow_charge_percent
+                CASE WHEN device_id = 'ecoflow' THEN ecoflow_charge_percent ELSE NULL END as ecoflow_charge_percent,
+                temperature_c,
+                humidity_percent
             FROM power_status
             WHERE 1=1
         `;

@@ -11,7 +11,8 @@ const DEVICE_IDS = process.env.DEVICE_IDS
     ? JSON.parse(process.env.DEVICE_IDS)
     : {
         'Розетка 1': 'bf3c70a960958bcf11ruml',
-        'Розетка 2': 'bfcbd371e1af7827f9sj79'
+        'Розетка 2': 'bfcbd371e1af7827f9sj79',
+        'T & H Sensor': 'bf9fe4c9ccac6ea697dvgo'
     };
 
 let accessToken = null;
@@ -223,6 +224,20 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             const voltageValue = statusMap['cur_voltage'] || null;
             const voltageV = voltageValue !== null && voltageValue !== undefined ? voltageValue / 10 : null;
             
+            // Температура и влажность (датчики T&H: va_temperature, current_temperature; va_humidity, humidity)
+            const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? null;
+            let temperatureC = null;
+            if (tempRaw !== null && tempRaw !== undefined) {
+                const v = Number(tempRaw);
+                if (!isNaN(v)) temperatureC = v > 100 ? v / 10 : v; // иногда приходит в 0.1°C
+            }
+            const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? null;
+            let humidityPercent = null;
+            if (humRaw !== null && humRaw !== undefined) {
+                const v = Number(humRaw);
+                if (!isNaN(v)) humidityPercent = v > 100 ? v / 10 : v;
+            }
+            
             // Логируем для отладки
             // console.log(`[${deviceId}] Данные о потреблении:`, {
             //     statusMap,
@@ -279,6 +294,8 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                 responseTimeMs: responseTime,
                 powerConsumptionW,
                 voltageV,
+                temperatureC,
+                humidityPercent,
                 error: null,
                 deviceId,
                 deviceName
@@ -290,6 +307,8 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
                 responseTimeMs: null,
                 powerConsumptionW: null,
                 voltageV: null,
+                temperatureC: null,
+                humidityPercent: null,
                 error: response.data?.msg || 'Unknown API error',
                 deviceId,
                 deviceName
@@ -312,6 +331,8 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             responseTimeMs: null,
             powerConsumptionW: null,
             voltageV: null,
+            temperatureC: null,
+            humidityPercent: null,
             error: errorMessage,
             deviceId,
             deviceName

@@ -50,7 +50,9 @@ app.post('/monitor', async (req, res) => {
                             consumptionW,
                             voltageV,
                             chargeLevel,
-                            null
+                            null,
+                            null, // temperatureC
+                            null  // humidityPercent
                         );
                         const parts = [];
                         if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
@@ -90,6 +92,8 @@ app.post('/monitor', async (req, res) => {
                     const saveDeviceName = (result.deviceId === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
                         ? HEATER_DEVICE_NAME : result.deviceName;
                     
+                    const temperatureToSave = result.isOnline && result.temperatureC != null ? result.temperatureC : null;
+                    const humidityToSave = result.isOnline && result.humidityPercent != null ? result.humidityPercent : null;
                     await db.savePowerStatus(
                         saveDeviceId,
                         saveDeviceName,
@@ -98,7 +102,9 @@ app.post('/monitor', async (req, res) => {
                         powerConsumptionToSave,
                         voltageToSave,
                         null, // ecoflowChargePercent - только для экофлошки
-                        result.error
+                        result.error,
+                        temperatureToSave,
+                        humidityToSave
                     );
                 } catch (dbError) {
                     // Логируем ошибку БД, но продолжаем с реальными данными устройства
@@ -129,7 +135,9 @@ app.post('/monitor', async (req, res) => {
                         null,
                         null,
                         null, // ecoflowChargePercent
-                        error.message
+                        error.message,
+                        null, // temperatureC
+                        null  // humidityPercent
                     );
                 } catch (dbError) {
                     console.error(`Не удалось сохранить ошибку в БД: ${dbError.message}`);
