@@ -189,13 +189,17 @@ async function getDeviceInfo(deviceId) {
  * Проверяет доступность устройства через Tuya API
  * Возвращает объект с информацией о статусе
  */
+const TH_SENSOR_DEVICE_ID = 'bf9fe4c9ccac6ea697dvgo';
+
 async function checkDeviceAvailability(deviceId, deviceName = null) {
     const startTime = Date.now();
     
     try {
         // Получаем информацию об устройстве для проверки реального онлайн-статуса
         const deviceInfo = await getDeviceInfo(deviceId);
-        // console.log(`[${deviceId}] Информация об устройстве:`, JSON.stringify(deviceInfo, null, 2));
+        if (deviceId === TH_SENSOR_DEVICE_ID) {
+            console.log('[Tuya DEBUG] T & H Sensor — ответ API getDeviceInfo:', JSON.stringify(deviceInfo, null, 2));
+        }
         
         // Получаем статус устройства через makeTuyaRequest (с автоматическим обновлением токена)
         const path = `/v1.0/devices/${deviceId}/status`;
@@ -203,8 +207,9 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         
         const responseTime = Date.now() - startTime;
         
-        // Логируем полный ответ API для диагностики
-        // console.log(`[${deviceId}] Полный ответ Tuya API (status):`, JSON.stringify(response.data, null, 2));
+        if (deviceId === TH_SENSOR_DEVICE_ID) {
+            console.log('[Tuya DEBUG] T & H Sensor — ответ API /status:', JSON.stringify(response.data, null, 2));
+        }
         
         if (response.data && response.data.success) {
             // Извлекаем данные о потреблении
