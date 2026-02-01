@@ -208,16 +208,15 @@ function buildStatusMap(statusList) {
 /**
  * Извлекает из statusMap потребление (Вт), напряжение (В), температуру (°C), влажность (%).
  * Розетки: cur_power, cur_voltage; va_temperature, va_humidity.
- * Zigbee T&H Sensor (Tuya): DP1 = Temperature, DP2 = Humidity — см. https://developer.tuya.com/en/docs/connect-subdevices-to-gateways/zigbee-sensor?id=K9ik6zvmhrfh6
- * Температура Zigbee: int16, часто в centidegrees (1/100 °C), например 2350 → 23.50 °C.
- * Влажность Zigbee: 0–10000 (0.01%), например 5500 → 55%.
+ * T&H Sensor (v2.0 shadow/properties): temp_current (0.1°C, напр. 239→23.9°C), humidity_value (%).
+ * Zigbee T&H: DP1/DP2, va_temperature, va_humidity.
  */
 function parseStatusMap(statusMap) {
     const powerValue = statusMap['cur_power'] || statusMap['cur_power_1'] || statusMap['power'] || null;
     const powerConsumptionW = powerValue !== null && powerValue !== undefined ? Number(powerValue) / 10 : null;
     const voltageValue = statusMap['cur_voltage'] || null;
     const voltageV = voltageValue !== null && voltageValue !== undefined ? Number(voltageValue) / 10 : null;
-    const tempRaw = statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? statusMap['1'] ?? null;
+    const tempRaw = statusMap['temp_current'] ?? statusMap['va_temperature'] ?? statusMap['current_temperature'] ?? statusMap['temperature'] ?? statusMap['1'] ?? null;
     let temperatureC = null;
     if (tempRaw !== null && tempRaw !== undefined) {
         const v = Number(tempRaw);
@@ -227,7 +226,7 @@ function parseStatusMap(statusMap) {
             else temperatureC = v;
         }
     }
-    const humRaw = statusMap['va_humidity'] ?? statusMap['humidity'] ?? statusMap['2'] ?? null;
+    const humRaw = statusMap['humidity_value'] ?? statusMap['va_humidity'] ?? statusMap['humidity'] ?? statusMap['2'] ?? null;
     let humidityPercent = null;
     if (humRaw !== null && humRaw !== undefined) {
         const v = Number(humRaw);
@@ -245,44 +244,41 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
     
     try {
         const deviceInfo = await getDeviceInfo(deviceId);
-        if (deviceId === TH_SENSOR_DEVICE_ID) {
-            console.log('[Tuya DEBUG] T & H Sensor — ответ API getDeviceInfo:', JSON.stringify(deviceInfo, null, 2));
-        }
-        
         let statusMap = {};
-        let response = null;
-        
-        const path = `/v1.0/devices/${deviceId}/status`;
-        response = await makeTuyaRequest(path, 'GET');
         
         if (deviceId === TH_SENSOR_DEVICE_ID) {
-            console.log('[Tuya DEBUG] T & H Sensor — ответ API /status:', JSON.stringify(response.data, null, 2));
-        }
-        
-        if (response.data && response.data.success && response.data.result) {
-            statusMap = buildStatusMap(response.data.result);
-        } else {
-            const code = response.data?.code;
-            const msg = (response.data?.msg || '').toLowerCase();
-            const isFunctionNotSupport = code === 2003 || msg.includes('function not support');
-            if (isFunctionNotSupport) {
-                const pathIot03 = `/v1.0/iot-03/devices/${deviceId}/status`;
-                try {
-                    const resIot03 = await makeTuyaRequest(pathIot03, 'GET');
-                    if (deviceId === TH_SENSOR_DEVICE_ID) {
-                        console.log('[Tuya DEBUG] T & H Sensor — ответ API iot-03/status:', JSON.stringify(resIot03.data, null, 2));
-                    }
-                    if (resIot03.data && resIot03.data.success && resIot03.data.result) {
-                        statusMap = buildStatusMap(resIot03.data.result);
-                    }
-                } catch (err) {
-                    if (deviceId === TH_SENSOR_DEVICE_ID) {
-                        console.log('[Tuya DEBUG] T & H Sensor — iot-03/status ошибка:', err.message);
-                    }
+            // Градусник: /status и iot-03/status возвращают пусто или 2003 — сразу берём данные из shadow/properties (без codes).
+            try {
+                const pathShadow = `/v2.0/cloud/thing/${deviceId}/shadow/properties`;
+                const resShadow = await makeTuyaRequest(pathShadow, 'GET', {});
+                if (resShadow.data && resShadow.data.success && resShadow.data.result && resShadow.data.result.properties) {
+                    resShadow.data.result.properties.forEach(p => {
+                        if (p.code != null && p.value !== undefined) statusMap[String(p.code)] = p.value;
+                    });
                 }
+            } catch (err) {
+                // shadow/properties ошибка — оставляем statusMap пустым
             }
-            if (Object.keys(statusMap).length === 0 && deviceInfo && Array.isArray(deviceInfo.status) && deviceInfo.status.length > 0) {
-                statusMap = buildStatusMap(deviceInfo.status);
+        } else {
+            const path = `/v1.0/devices/${deviceId}/status`;
+            const response = await makeTuyaRequest(path, 'GET');
+            if (response.data && response.data.success && response.data.result) {
+                statusMap = buildStatusMap(response.data.result);
+            } else {
+                const code = response.data?.code;
+                const msg = (response.data?.msg || '').toLowerCase();
+                const isFunctionNotSupport = code === 2003 || msg.includes('function not support');
+                if (isFunctionNotSupport) {
+                    try {
+                        const resIot03 = await makeTuyaRequest(`/v1.0/iot-03/devices/${deviceId}/status`, 'GET');
+                        if (resIot03.data && resIot03.data.success && resIot03.data.result && resIot03.data.result.length) {
+                            statusMap = buildStatusMap(resIot03.data.result);
+                        }
+                    } catch (err) {}
+                }
+                if (Object.keys(statusMap).length === 0 && deviceInfo && Array.isArray(deviceInfo.status) && deviceInfo.status.length > 0) {
+                    statusMap = buildStatusMap(deviceInfo.status);
+                }
             }
         }
         
