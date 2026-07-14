@@ -84,13 +84,14 @@ async function fetchEcoFlowStatus(forceRefresh = false) {
 /**
  * Извлекает напряжение в сети (В) и потребление на выходах 220 В (Вт) из deviceState.
  * Напряжение: inv.acInVol в мВ → делим на 1000.
- * Потребление: inv.outputWatts или pd.wattsOutSum (Вт).
+ * Потребление (выдача): inv.outputWatts или pd.wattsOutSum (Вт).
+ * Зарядка (вход): pd.wattsInSum (Вт) — суммарная мощность на входе.
  * @param {Record<string, any>} deviceState
- * @returns {{ voltageV: number|null, consumptionW: number|null }}
+ * @returns {{ voltageV: number|null, outputW: number|null, inputW: number|null }}
  */
-function getVoltageAndConsumptionFromState(deviceState) {
+function getPowerFromState(deviceState) {
     if (!deviceState || typeof deviceState !== 'object') {
-        return { voltageV: null, consumptionW: null };
+        return { voltageV: null, outputW: null, inputW: null };
     }
     let voltageV = null;
     const acInVolMv = deviceState['inv.acInVol'];
@@ -98,23 +99,35 @@ function getVoltageAndConsumptionFromState(deviceState) {
         const v = Number(acInVolMv) / 1000;
         if (!isNaN(v)) voltageV = v;
     }
-    let consumptionW = null;
+    let outputW = null;
     const outW = deviceState['inv.outputWatts'] ?? deviceState['pd.wattsOutSum'];
     if (outW !== undefined && outW !== null) {
         const w = Number(outW);
-        if (!isNaN(w)) consumptionW = w;
+        if (!isNaN(w)) outputW = w;
     }
-    return { voltageV, consumptionW };
+    let inputW = null;
+    const inW = deviceState['pd.wattsInSum'] ?? deviceState['pd.chgPowerAC'];
+    if (inW !== undefined && inW !== null) {
+        const w = Number(inW);
+        if (!isNaN(w)) inputW = w;
+    }
+    return { voltageV, outputW, inputW };
+}
+
+/** @deprecated используйте getPowerFromState */
+function getVoltageAndConsumptionFromState(deviceState) {
+    const { voltageV, outputW } = getPowerFromState(deviceState);
+    return { voltageV, consumptionW: outputW };
 }
 
 /**
  * Один вызов fetch — возвращает заряд, напряжение и потребление экофлошки.
  * @param {boolean} forceRefresh - принудительное обновление (игнорировать кэш)
- * @returns {Promise<{ chargeLevel: number|null, voltageV: number|null, consumptionW: number|null }>}
+ * @returns {Promise<{ chargeLevel: number|null, voltageV: number|null, consumptionW: number|null, inputW: number|null }>}
  */
 async function getEcoFlowVoltageAndConsumption(forceRefresh = false) {
     if (!ECOFLOW_ACCESS_KEY || !ECOFLOW_SECRET_KEY || !ECOFLOW_DEVICE_SN) {
-        return { chargeLevel: null, voltageV: null, consumptionW: null };
+        return { chargeLevel: null, voltageV: null, consumptionW: null, inputW: null };
     }
     try {
         const { deviceState } = await fetchEcoFlowStatus(forceRefresh);
@@ -127,11 +140,11 @@ async function getEcoFlowVoltageAndConsumption(forceRefresh = false) {
             const n = Number(soc);
             if (!isNaN(n)) chargeLevel = Math.max(0, Math.min(100, n));
         }
-        const { voltageV, consumptionW } = getVoltageAndConsumptionFromState(deviceState);
-        return { chargeLevel, voltageV, consumptionW };
+        const { voltageV, outputW, inputW } = getPowerFromState(deviceState);
+        return { chargeLevel, voltageV, consumptionW: outputW, inputW };
     } catch (error) {
         console.error('Ошибка получения данных экофлошки:', error.message);
-        return { chargeLevel: null, voltageV: null, consumptionW: null };
+        return { chargeLevel: null, voltageV: null, consumptionW: null, inputW: null };
     }
 }
 

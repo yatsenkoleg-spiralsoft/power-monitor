@@ -46,6 +46,7 @@ function mapTuyaResultToDevice(result) {
         powerConsumptionW: result.isOnline ? result.powerConsumptionW : null,
         voltageV: result.isOnline ? result.voltageV : null,
         ecoflowChargePercent: null,
+        powerInputW: null,
         temperatureC: result.isOnline ? result.temperatureC : null,
         humidityPercent: result.isOnline ? result.humidityPercent : null,
         error: result.error ?? null,
@@ -61,6 +62,7 @@ function mapDbRowToDevice(row) {
         powerConsumptionW: row.power_consumption_w != null ? Number(row.power_consumption_w) : null,
         voltageV: row.voltage_v != null ? Number(row.voltage_v) : null,
         ecoflowChargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
+        powerInputW: null,
         temperatureC: row.temperature_c != null ? Number(row.temperature_c) : null,
         humidityPercent: row.humidity_percent != null ? Number(row.humidity_percent) : null,
         error: row.error_message ?? null,
@@ -68,14 +70,15 @@ function mapDbRowToDevice(row) {
     };
 }
 
-function mapEcoflowToDevice({ chargeLevel, voltageV, consumptionW }) {
-    const hasData = chargeLevel !== null || voltageV !== null || consumptionW !== null;
+function mapEcoflowToDevice({ chargeLevel, voltageV, consumptionW, inputW }) {
+    const hasData = chargeLevel !== null || voltageV !== null || consumptionW !== null || inputW !== null;
     return {
         deviceId: 'ecoflow',
         deviceName: 'Экофлошка',
         isOnline: hasData,
         responseTimeMs: null,
         powerConsumptionW: consumptionW,
+        powerInputW: inputW,
         voltageV: voltageV,
         ecoflowChargePercent: chargeLevel,
         temperatureC: null,
