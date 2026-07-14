@@ -86,7 +86,7 @@ function mapDbRowToDevice(row) {
         deviceName: row.device_name,
         isOnline: row.is_online === 1,
         responseTimeMs: row.response_time_ms,
-        switchOn: row.switch_on != null ? row.switch_on === 1 : null,
+        switchOn: row.is_online === 1 && row.switch_on != null ? row.switch_on === 1 : null,
         powerConsumptionW: row.power_consumption_w != null ? Number(row.power_consumption_w) : null,
         voltageV: row.voltage_v != null ? Number(row.voltage_v) : null,
         ecoflowChargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
@@ -345,6 +345,49 @@ app.get('/monitor', async (req, res) => {
     }
 });
 
+const CONTROL_VERIFY_ATTEMPTS = 4;
+const CONTROL_VERIFY_DELAY_MS = 1500;
+
+function getTuyaDeviceLabel(tuyaDeviceId) {
+    const found = tuya.getDevices().find((device) => device.id === tuyaDeviceId);
+    return found?.name ?? tuyaDeviceId;
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * После команды опрашивает Tuya, пока реле не совпадёт с ожиданием или не исчерпаны попытки.
+ * @returns {Promise<{ verified: boolean, offline: boolean, result: object }>}
+ */
+async function verifySwitchAfterCommand(tuyaDeviceId, deviceName, expectedOn) {
+    let lastResult = null;
+
+    for (let attempt = 0; attempt < CONTROL_VERIFY_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            await sleep(CONTROL_VERIFY_DELAY_MS);
+        }
+        const result = await tuya.checkDeviceAvailability(tuyaDeviceId, deviceName);
+        lastResult = result;
+
+        if (!result.isOnline) {
+            continue;
+        }
+        if (result.switchOn === expectedOn) {
+            return { verified: true, offline: false, result };
+        }
+    }
+
+    if (!lastResult || !lastResult.isOnline) {
+        return { verified: false, offline: true, result: lastResult };
+    }
+    if (lastResult.switchOn === expectedOn) {
+        return { verified: true, offline: false, result: lastResult };
+    }
+    return { verified: false, offline: false, result: lastResult };
+}
+
 /**
  * POST /api/control — вкл/выкл розетки или света
  * Body: { deviceId: string, on: boolean }
@@ -368,12 +411,38 @@ app.post('/api/control', async (req, res) => {
         }
 
         const tuyaDeviceId = CONTROL_ID_MAP[deviceId];
+        const deviceName = getTuyaDeviceLabel(tuyaDeviceId);
         await tuya.sendDeviceCommand(tuyaDeviceId, { code: 'switch_1', value: on });
+
+        const verification = await verifySwitchAfterCommand(tuyaDeviceId, deviceName, on);
+        if (!verification.verified) {
+            const actual = verification.result;
+            if (verification.offline) {
+                return res.json({
+                    success: false,
+                    verified: false,
+                    deviceId,
+                    isOnline: false,
+                    switchOn: null,
+                    error: 'Устройство офлайн — не удалось подтвердить переключение',
+                });
+            }
+            return res.json({
+                success: false,
+                verified: false,
+                deviceId,
+                isOnline: actual?.isOnline ?? false,
+                switchOn: actual?.switchOn ?? null,
+                error: 'Состояние устройства не изменилось',
+            });
+        }
 
         res.json({
             success: true,
+            verified: true,
             deviceId,
-            switchOn: on,
+            isOnline: verification.result.isOnline,
+            switchOn: verification.result.switchOn,
         });
     } catch (error) {
         console.error('Ошибка управления устройством:', error);
