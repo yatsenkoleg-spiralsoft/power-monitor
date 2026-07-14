@@ -1,38 +1,36 @@
-# Деплой power-monitor после изменений API
+# Деплой power-monitor: виджет + FCM
 
-Добавлены endpoint'ы:
-- `GET /api/current` — последний снимок из MySQL
-- `GET /monitor` — live-снимок (Tuya + EcoFlow), без записи в БД
+## Новые endpoint'ы
+
+- `POST /api/fcm/register` body `{ "token": "..." }` — регистрация FCM-токена
+- `POST /api/fcm/unregister` body `{ "token": "..." }` — удаление токена
+- `GET /api/widget` — `{ gridPresent, chargePercent, updatedAt }` для виджета
+
+`POST /monitor` теперь при смене сети (2 мин debounce) шлёт FCM data push.
+
+## Перед деплоем
+
+1. Выполнить миграцию [`migrations/002_fcm_and_grid_state.sql`](migrations/002_fcm_and_grid_state.sql) в MySQL.
+2. В GCP Secret Manager создать секрет с JSON service account Firebase.
+3. В Cloud Run добавить переменную `FIREBASE_SERVICE_ACCOUNT_JSON` (reference на секрет).
 
 ## Деплой
 
 ```bash
 cd power-monitor
+npm install
 gcloud run deploy tuya-power-monitor --source . --region europe-west1
 ```
 
 ## Проверка
 
 ```bash
-curl "https://power-monitor-648695455182.europe-west1.run.app/api/current"
-curl "https://power-monitor-648695455182.europe-west1.run.app/monitor"
+curl "https://power-monitor-648695455182.europe-west1.run.app/api/widget"
+curl -X POST "https://power-monitor-648695455182.europe-west1.run.app/api/fcm/register" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"test-token"}'
 ```
 
-Ожидаемый формат:
+## Android (ручные шаги)
 
-```json
-{
-  "success": true,
-  "source": "database",
-  "timestamp": "2026-07-14T19:23:00.000Z",
-  "devices": [
-    {
-      "deviceId": "obogrevatel",
-      "deviceName": "Обогреватель",
-      "isOnline": true,
-      "powerConsumptionW": 103.6,
-      "voltageV": 204.9
-    }
-  ]
-}
-```
+См. [`../android-app/FCM_SETUP.md`](../android-app/FCM_SETUP.md)

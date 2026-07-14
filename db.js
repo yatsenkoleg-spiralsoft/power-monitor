@@ -568,6 +568,121 @@ async function getCurrentStatus() {
     }
 }
 
+async function upsertFcmToken(token, platform = 'android') {
+    const pool = getPool();
+    const query = `
+        INSERT INTO fcm_tokens (token, platform, created_at, last_seen_at)
+        VALUES (?, ?, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE platform = VALUES(platform), last_seen_at = NOW()
+    `;
+    await pool.execute(query, [token, platform]);
+}
+
+async function removeFcmToken(token) {
+    const pool = getPool();
+    await pool.execute('DELETE FROM fcm_tokens WHERE token = ?', [token]);
+}
+
+async function getAllFcmTokens() {
+    const pool = getPool();
+    const [rows] = await pool.execute('SELECT token FROM fcm_tokens ORDER BY last_seen_at DESC');
+    return rows.map((row) => row.token);
+}
+
+/**
+ * Debounced grid state: notify after 2 consecutive minutes of new raw reading.
+ * @param {boolean|null} rawPresent
+ * @returns {Promise<{ changed: boolean, confirmedPresent: boolean|null, shouldNotify: boolean }>}
+ */
+async function processGridState(rawPresent) {
+    if (rawPresent === null) {
+        return { changed: false, confirmedPresent: null, shouldNotify: false };
+    }
+
+    const pool = getPool();
+    const rawBit = rawPresent ? 1 : 0;
+
+    const [rows] = await pool.execute('SELECT * FROM grid_state WHERE id = 1');
+    let state = rows[0];
+
+    if (!state) {
+        await pool.execute(
+            'INSERT INTO grid_state (id, confirmed_present, pending_present, pending_streak) VALUES (1, NULL, ?, 1)',
+            [rawBit]
+        );
+        return { changed: false, confirmedPresent: null, shouldNotify: false };
+    }
+
+    let pendingPresent = state.pending_present;
+    let pendingStreak = state.pending_streak;
+    let confirmedPresent = state.confirmed_present;
+
+    if (pendingPresent === null || pendingPresent !== rawBit) {
+        pendingPresent = rawBit;
+        pendingStreak = 1;
+    } else {
+        pendingStreak += 1;
+    }
+
+    let shouldNotify = false;
+    let changed = false;
+
+    if (pendingStreak >= 2) {
+        if (confirmedPresent === null) {
+            confirmedPresent = pendingPresent;
+            changed = true;
+        } else if (pendingPresent !== confirmedPresent) {
+            confirmedPresent = pendingPresent;
+            shouldNotify = true;
+            changed = true;
+        }
+    }
+
+    await pool.execute(
+        `UPDATE grid_state
+         SET confirmed_present = ?, pending_present = ?, pending_streak = ?, updated_at = NOW()
+         WHERE id = 1`,
+        [confirmedPresent, pendingPresent, pendingStreak]
+    );
+
+    return {
+        changed,
+        confirmedPresent: confirmedPresent === null ? null : confirmedPresent === 1,
+        shouldNotify,
+    };
+}
+
+/**
+ * Latest snapshot for widget API.
+ * @param {string} socketDeviceId
+ * @param {string} ecoflowDeviceId
+ * @param {(isOnline: boolean, voltageV: number|null) => boolean|null} computeGridPresent
+ */
+async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeGridPresent) {
+    const rows = await getCurrentStatus();
+    const socketRow = rows.find((row) => row.device_id === socketDeviceId);
+    const ecoflowRow = rows.find((row) => row.device_id === ecoflowDeviceId);
+
+    const gridPresent = socketRow
+        ? computeGridPresent(socketRow.is_online === 1, socketRow.voltage_v != null ? Number(socketRow.voltage_v) : null)
+        : null;
+
+    const chargePercent = ecoflowRow && ecoflowRow.ecoflow_charge_percent != null
+        ? Number(ecoflowRow.ecoflow_charge_percent)
+        : null;
+
+    const latestTimestamp = rows.reduce((latest, row) => {
+        const ts = new Date(row.timestamp).getTime();
+        return ts > latest ? ts : latest;
+    }, 0);
+
+    return {
+        gridPresent,
+        chargePercent,
+        updatedAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : new Date().toISOString(),
+    };
+}
+
 /**
  * Проверяет подключение к базе данных
  */
@@ -596,5 +711,10 @@ module.exports = {
     getTenMinuteData,
     getMinuteData,
     getCurrentStatus,
+    upsertFcmToken,
+    removeFcmToken,
+    getAllFcmTokens,
+    processGridState,
+    getLatestWidgetSnapshot,
     testConnection
 };

@@ -3,6 +3,8 @@ const cors = require('cors');
 const tuya = require('./tuya');
 const db = require('./db');
 const ecoflow = require('./ecoflow');
+const gridPower = require('./gridPower');
+const fcm = require('./fcm');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -268,7 +270,25 @@ app.post('/monitor', async (req, res) => {
         const offlineCount = results.length - onlineCount;
         
         console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло (API): ${ecoflowCharge.toFixed(1)}%` : ''}`);
-        
+
+        try {
+            const socketResult = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
+            const rawPresent = gridPower.computeGridPresent(
+                socketResult?.isOnline,
+                socketResult?.voltageV
+            );
+            const gridUpdate = await db.processGridState(rawPresent);
+            if (gridUpdate.shouldNotify && gridUpdate.confirmedPresent !== null) {
+                await fcm.sendGridChangeNotification({
+                    gridPresent: gridUpdate.confirmedPresent,
+                    chargePercent: ecoflowCharge,
+                    timestamp: new Date().toISOString(),
+                });
+            }
+        } catch (notifyError) {
+            console.error('Ошибка обработки grid state / FCM:', notifyError.message);
+        }
+
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
@@ -388,6 +408,60 @@ app.get('/api/current', async (req, res) => {
             success: false,
             error: error.message,
         });
+    }
+});
+
+/**
+ * POST /api/fcm/register — регистрация FCM-токена Android-приложения
+ */
+app.post('/api/fcm/register', async (req, res) => {
+    try {
+        const token = req.body && req.body.token;
+        if (!token || typeof token !== 'string' || token.length < 10) {
+            return res.status(400).json({ success: false, error: 'token required' });
+        }
+        await db.upsertFcmToken(token.trim(), req.body.platform || 'android');
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Ошибка регистрации FCM token:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/fcm/unregister — удаление FCM-токена
+ */
+app.post('/api/fcm/unregister', async (req, res) => {
+    try {
+        const token = req.body && req.body.token;
+        if (!token || typeof token !== 'string') {
+            return res.status(400).json({ success: false, error: 'token required' });
+        }
+        await db.removeFcmToken(token.trim());
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Ошибка удаления FCM token:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/widget — лёгкий снимок для виджета (сеть + заряд)
+ */
+app.get('/api/widget', async (req, res) => {
+    try {
+        const snapshot = await db.getLatestWidgetSnapshot(
+            gridPower.SOCKET2_DEVICE_ID,
+            gridPower.ECOFLOW_DEVICE_ID,
+            gridPower.computeGridPresent
+        );
+        res.json({
+            success: true,
+            ...snapshot,
+        });
+    } catch (error) {
+        console.error('Ошибка получения widget snapshot:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
@@ -689,6 +763,9 @@ app.get('/', (req, res) => {
             monitor: 'POST /monitor - Проверка и запись в БД (Cloud Scheduler)',
             monitorLive: 'GET /monitor - Live-снимок всех устройств (без записи в БД)',
             current: 'GET /api/current - Последний снимок из БД',
+            widget: 'GET /api/widget - Сеть + заряд для виджета',
+            fcmRegister: 'POST /api/fcm/register - Регистрация FCM-токена',
+            fcmUnregister: 'POST /api/fcm/unregister - Удаление FCM-токена',
             control: 'POST /api/control - Вкл/выкл розетки или света',
             stats: 'GET /api/stats - Статистика за период',
             daily: 'GET /api/daily - Данные для графика по дням',
