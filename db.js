@@ -652,6 +652,77 @@ async function processGridState(rawPresent) {
     };
 }
 
+const CHARGE_PUSH_THRESHOLD_PERCENT = 1;
+
+/**
+ * @returns {Promise<{ confirmedPresent: boolean|null, lastPushedChargePercent: number|null }>}
+ */
+async function getGridPushState() {
+    const pool = getPool();
+    const [rows] = await pool.execute(
+        'SELECT confirmed_present, last_pushed_charge_percent FROM grid_state WHERE id = 1'
+    );
+    const state = rows[0];
+    if (!state) {
+        return { confirmedPresent: null, lastPushedChargePercent: null };
+    }
+    return {
+        confirmedPresent: state.confirmed_present === null
+            ? null
+            : state.confirmed_present === 1,
+        lastPushedChargePercent: state.last_pushed_charge_percent != null
+            ? Number(state.last_pushed_charge_percent)
+            : null,
+    };
+}
+
+/**
+ * @param {number|null|undefined} chargePercent
+ * @returns {Promise<{ shouldPush: boolean }>}
+ */
+async function evaluateChargePush(chargePercent) {
+    if (chargePercent === null || chargePercent === undefined || Number.isNaN(Number(chargePercent))) {
+        return { shouldPush: false };
+    }
+
+    const rounded = Math.round(Number(chargePercent));
+    const { confirmedPresent, lastPushedChargePercent } = await getGridPushState();
+
+    if (confirmedPresent === null) {
+        return { shouldPush: false };
+    }
+
+    if (lastPushedChargePercent === null) {
+        await recordWidgetPush(confirmedPresent, rounded);
+        return { shouldPush: false };
+    }
+
+    if (Math.abs(rounded - lastPushedChargePercent) >= CHARGE_PUSH_THRESHOLD_PERCENT) {
+        return { shouldPush: true };
+    }
+
+    return { shouldPush: false };
+}
+
+/**
+ * @param {boolean|null} gridPresent
+ * @param {number|null|undefined} chargePercent
+ */
+async function recordWidgetPush(gridPresent, chargePercent) {
+    const pool = getPool();
+    const gridBit = gridPresent === null || gridPresent === undefined ? null : (gridPresent ? 1 : 0);
+    const charge = chargePercent != null && !Number.isNaN(Number(chargePercent))
+        ? Math.round(Number(chargePercent))
+        : null;
+
+    await pool.execute(
+        `UPDATE grid_state
+         SET last_pushed_charge_percent = ?, last_pushed_grid_present = ?
+         WHERE id = 1`,
+        [charge, gridBit]
+    );
+}
+
 /**
  * Latest snapshot for widget API.
  * @param {string} socketDeviceId
@@ -715,6 +786,8 @@ module.exports = {
     removeFcmToken,
     getAllFcmTokens,
     processGridState,
+    evaluateChargePush,
+    recordWidgetPush,
     getLatestWidgetSnapshot,
     testConnection
 };

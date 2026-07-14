@@ -6,11 +6,13 @@
 - `POST /api/fcm/unregister` body `{ "token": "..." }` — удаление токена
 - `GET /api/widget` — `{ gridPresent, chargePercent, updatedAt }` для виджета
 
-`POST /monitor` теперь при смене сети (2 мин debounce) шлёт FCM data push.
+`POST /monitor` при смене сети (2 мин debounce) шлёт FCM с уведомлением; при изменении заряда EcoFlow на **≥1%** — тихий FCM только для виджета.
 
 ## Перед деплоем
 
-1. Выполнить миграцию [`migrations/002_fcm_and_grid_state.sql`](migrations/002_fcm_and_grid_state.sql) в MySQL.
+1. Миграции в MySQL:
+   - [`migrations/002_fcm_and_grid_state.sql`](migrations/002_fcm_and_grid_state.sql)
+   - [`migrations/003_widget_charge_push.sql`](migrations/003_widget_charge_push.sql)
 2. В GCP Secret Manager создать секрет с JSON service account Firebase.
 3. В Cloud Run добавить переменную `FIREBASE_SERVICE_ACCOUNT_JSON` (reference на секрет).
 

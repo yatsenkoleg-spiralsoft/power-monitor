@@ -278,12 +278,28 @@ app.post('/monitor', async (req, res) => {
                 socketResult?.voltageV
             );
             const gridUpdate = await db.processGridState(rawPresent);
-            if (gridUpdate.shouldNotify && gridUpdate.confirmedPresent !== null) {
-                await fcm.sendGridChangeNotification({
-                    gridPresent: gridUpdate.confirmedPresent,
+            const pushTimestamp = new Date().toISOString();
+            const confirmedPresent = gridUpdate.confirmedPresent;
+
+            if (gridUpdate.shouldNotify && confirmedPresent !== null) {
+                await fcm.sendPowerStatusPush({
+                    gridPresent: confirmedPresent,
                     chargePercent: ecoflowCharge,
-                    timestamp: new Date().toISOString(),
+                    timestamp: pushTimestamp,
+                    notifyGridChange: true,
                 });
+                await db.recordWidgetPush(confirmedPresent, ecoflowCharge);
+            } else if (confirmedPresent !== null) {
+                const chargePush = await db.evaluateChargePush(ecoflowCharge);
+                if (chargePush.shouldPush) {
+                    await fcm.sendPowerStatusPush({
+                        gridPresent: confirmedPresent,
+                        chargePercent: ecoflowCharge,
+                        timestamp: pushTimestamp,
+                        notifyGridChange: false,
+                    });
+                    await db.recordWidgetPush(confirmedPresent, ecoflowCharge);
+                }
             }
         } catch (notifyError) {
             console.error('Ошибка обработки grid state / FCM:', notifyError.message);

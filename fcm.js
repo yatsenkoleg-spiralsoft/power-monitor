@@ -26,9 +26,9 @@ function initFirebase() {
 }
 
 /**
- * @param {{ gridPresent: boolean, chargePercent: number|null, timestamp: string }} payload
+ * @param {{ gridPresent: boolean, chargePercent: number|null, timestamp: string, notifyGridChange?: boolean }} payload
  */
-async function sendGridChangeNotification({ gridPresent, chargePercent, timestamp }) {
+async function sendPowerStatusPush({ gridPresent, chargePercent, timestamp, notifyGridChange = false }) {
     if (!initFirebase()) {
         return { sent: 0, failed: 0, skipped: true };
     }
@@ -44,6 +44,7 @@ async function sendGridChangeNotification({ gridPresent, chargePercent, timestam
         grid_present: gridPresent ? '1' : '0',
         charge_percent: chargePercent != null ? String(Math.round(chargePercent)) : '',
         timestamp: timestamp || new Date().toISOString(),
+        notify_grid: notifyGridChange ? '1' : '0',
     };
 
     const message = {
@@ -74,8 +75,9 @@ async function sendGridChangeNotification({ gridPresent, chargePercent, timestam
         await db.removeFcmToken(token);
     }
 
+    const reason = notifyGridChange ? 'grid change' : 'charge update';
     console.log(
-        `FCM: grid change push sent=${response.successCount} failed=${response.failureCount} grid=${gridPresent ? 'on' : 'off'}`
+        `FCM: ${reason} push sent=${response.successCount} failed=${response.failureCount} grid=${gridPresent ? 'on' : 'off'} charge=${data.charge_percent || 'n/a'}`
     );
 
     return {
@@ -85,6 +87,12 @@ async function sendGridChangeNotification({ gridPresent, chargePercent, timestam
     };
 }
 
+/** @deprecated use sendPowerStatusPush with notifyGridChange: true */
+async function sendGridChangeNotification(payload) {
+    return sendPowerStatusPush({ ...payload, notifyGridChange: true });
+}
+
 module.exports = {
+    sendPowerStatusPush,
     sendGridChangeNotification,
 };
