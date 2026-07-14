@@ -13,6 +13,77 @@ const SOCKET1_DEVICE_ID = 'bf3c70a960958bcf11ruml';
 const HEATER_DEVICE_ID = 'obogrevatel';
 const HEATER_DEVICE_NAME = 'Обогреватель';
 
+const DEVICE_SORT_ORDER = [
+    HEATER_DEVICE_ID,
+    'bfcbd371e1af7827f9sj79',
+    'bf2bf2252c37a041b0tbvs',
+    'ecoflow',
+];
+
+function sortDevices(devices) {
+    return [...devices].sort((a, b) => {
+        const ai = DEVICE_SORT_ORDER.indexOf(a.deviceId);
+        const bi = DEVICE_SORT_ORDER.indexOf(b.deviceId);
+        const aOrder = ai === -1 ? 999 : ai;
+        const bOrder = bi === -1 ? 999 : bi;
+        return aOrder - bOrder;
+    });
+}
+
+function mapTuyaResultToDevice(result) {
+    const now = new Date();
+    let deviceId = result.deviceId;
+    let deviceName = result.deviceName;
+    if (deviceId === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC) {
+        deviceId = HEATER_DEVICE_ID;
+        deviceName = HEATER_DEVICE_NAME;
+    }
+    return {
+        deviceId,
+        deviceName,
+        isOnline: result.isOnline,
+        responseTimeMs: result.responseTimeMs ?? null,
+        powerConsumptionW: result.isOnline ? result.powerConsumptionW : null,
+        voltageV: result.isOnline ? result.voltageV : null,
+        ecoflowChargePercent: null,
+        temperatureC: result.isOnline ? result.temperatureC : null,
+        humidityPercent: result.isOnline ? result.humidityPercent : null,
+        error: result.error ?? null,
+    };
+}
+
+function mapDbRowToDevice(row) {
+    return {
+        deviceId: row.device_id,
+        deviceName: row.device_name,
+        isOnline: row.is_online === 1,
+        responseTimeMs: row.response_time_ms,
+        powerConsumptionW: row.power_consumption_w != null ? Number(row.power_consumption_w) : null,
+        voltageV: row.voltage_v != null ? Number(row.voltage_v) : null,
+        ecoflowChargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
+        temperatureC: row.temperature_c != null ? Number(row.temperature_c) : null,
+        humidityPercent: row.humidity_percent != null ? Number(row.humidity_percent) : null,
+        error: row.error_message ?? null,
+        recordedAt: row.timestamp,
+    };
+}
+
+function mapEcoflowToDevice({ chargeLevel, voltageV, consumptionW }) {
+    const hasData = chargeLevel !== null || voltageV !== null || consumptionW !== null;
+    return {
+        deviceId: 'ecoflow',
+        deviceName: 'Экофлошка',
+        isOnline: hasData,
+        responseTimeMs: null,
+        powerConsumptionW: consumptionW,
+        voltageV: voltageV,
+        ecoflowChargePercent: chargeLevel,
+        temperatureC: null,
+        humidityPercent: null,
+        error: hasData ? null : 'Не удалось получить данные',
+    };
+}
+
 // Middleware
 app.use(cors()); // Разрешаем CORS для всех запросов
 app.use(express.json());
@@ -190,27 +261,59 @@ app.post('/monitor', async (req, res) => {
 });
 
 /**
- * GET endpoint для ручной проверки (для тестирования)
+ * GET endpoint — live-снимок всех устройств (без записи в БД)
  */
 app.get('/monitor', async (req, res) => {
     try {
-        // console.log('Ручная проверка устройств...');
-        
         const devices = tuya.getDevices();
-        const results = await Promise.all(
-            devices.map(device => tuya.checkDeviceAvailability(device.id, device.name))
-        );
-        
+        const [results, ecoflowData] = await Promise.all([
+            Promise.all(devices.map(device => tuya.checkDeviceAvailability(device.id, device.name))),
+            ecoflow.getEcoFlowVoltageAndConsumption(),
+        ]);
+
+        const deviceList = sortDevices([
+            ...results.map(mapTuyaResultToDevice),
+            mapEcoflowToDevice(ecoflowData),
+        ]);
+
         res.json({
             success: true,
+            source: 'live',
             timestamp: new Date().toISOString(),
-            results
+            devices: deviceList,
         });
     } catch (error) {
-        console.error('Ошибка ручной проверки:', error);
+        console.error('Ошибка live-проверки устройств:', error);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+        });
+    }
+});
+
+/**
+ * GET /api/current — последний снимок из БД (быстрый, ~1 мин свежести)
+ */
+app.get('/api/current', async (req, res) => {
+    try {
+        const rows = await db.getCurrentStatus();
+        const devices = sortDevices(rows.map(mapDbRowToDevice));
+        const latestTimestamp = rows.reduce((latest, row) => {
+            const ts = new Date(row.timestamp).getTime();
+            return ts > latest ? ts : latest;
+        }, 0);
+
+        res.json({
+            success: true,
+            source: 'database',
+            timestamp: latestTimestamp ? new Date(latestTimestamp).toISOString() : new Date().toISOString(),
+            devices,
+        });
+    } catch (error) {
+        console.error('Ошибка получения текущего статуса из БД:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
         });
     }
 });
@@ -510,7 +613,9 @@ app.get('/', (req, res) => {
         service: 'Tuya Power Monitor',
         version: '1.0.0',
         endpoints: {
-            monitor: 'POST /monitor - Проверка доступности розеток (для Cloud Scheduler)',
+            monitor: 'POST /monitor - Проверка и запись в БД (Cloud Scheduler)',
+            monitorLive: 'GET /monitor - Live-снимок всех устройств (без записи в БД)',
+            current: 'GET /api/current - Последний снимок из БД',
             stats: 'GET /api/stats - Статистика за период',
             daily: 'GET /api/daily - Данные для графика по дням',
             dailyDetails: 'GET /api/daily-details - Детальные данные за день',

@@ -526,6 +526,43 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
 }
 
 /**
+ * Последняя запись по каждому устройству (текущий снимок из БД)
+ */
+async function getCurrentStatus() {
+    const pool = getPool();
+
+    try {
+        const query = `
+            SELECT
+                ps.device_id,
+                ps.device_name,
+                ps.is_online,
+                ps.response_time_ms,
+                ps.power_consumption_w,
+                ps.voltage_v,
+                ps.ecoflow_charge_percent,
+                ps.temperature_c,
+                ps.humidity_percent,
+                ps.error_message,
+                ps.timestamp
+            FROM power_status ps
+            INNER JOIN (
+                SELECT device_id, MAX(timestamp) AS max_ts
+                FROM power_status
+                GROUP BY device_id
+            ) latest ON ps.device_id = latest.device_id AND ps.timestamp = latest.max_ts
+            ORDER BY ps.device_name
+        `;
+
+        const [rows] = await pool.execute(query);
+        return rows;
+    } catch (error) {
+        console.error('Ошибка получения текущего статуса:', error.message);
+        throw error;
+    }
+}
+
+/**
  * Проверяет подключение к базе данных
  */
 async function testConnection() {
@@ -552,5 +589,6 @@ module.exports = {
     getHourlyData,
     getTenMinuteData,
     getMinuteData,
+    getCurrentStatus,
     testConnection
 };
