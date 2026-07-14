@@ -14,6 +14,8 @@ const DEVICE_IDS = process.env.DEVICE_IDS
         'Розетка 2': 'bfcbd371e1af7827f9sj79',
         'T & H Sensor': 'bf2bf2252c37a041b0tbvs',
         'Свет на кухне': 'bf2a33ded6cd1955cbumtz',
+        'Бойлер': 'bf935c8cff3752fbecgfew',
+        'Подсветка цветам': 'bffd4e253c18de762ct932',
     };
 
 let accessToken = null;
