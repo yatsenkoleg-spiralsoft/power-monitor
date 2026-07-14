@@ -12,12 +12,28 @@ const SOCKET1_HEATER_CUTOFF_UTC = new Date('2026-01-27T17:24:00.000Z'); // 19:24
 const SOCKET1_DEVICE_ID = 'bf3c70a960958bcf11ruml';
 const HEATER_DEVICE_ID = 'obogrevatel';
 const HEATER_DEVICE_NAME = 'Обогреватель';
+const KITCHEN_LIGHT_DEVICE_ID = 'bf2a33ded6cd1955cbumtz';
+const TH_SENSOR_DEVICE_ID = 'bf2bf2252c37a041b0tbvs';
+const SOCKET2_DEVICE_ID = 'bfcbd371e1af7827f9sj79';
+
+const CONTROLLABLE_DEVICE_IDS = new Set([
+    SOCKET2_DEVICE_ID,
+    HEATER_DEVICE_ID,
+    KITCHEN_LIGHT_DEVICE_ID,
+]);
+
+const CONTROL_ID_MAP = {
+    [HEATER_DEVICE_ID]: SOCKET1_DEVICE_ID,
+    [SOCKET2_DEVICE_ID]: SOCKET2_DEVICE_ID,
+    [KITCHEN_LIGHT_DEVICE_ID]: KITCHEN_LIGHT_DEVICE_ID,
+};
 
 const DEVICE_SORT_ORDER = [
+    SOCKET2_DEVICE_ID,
     HEATER_DEVICE_ID,
-    'bfcbd371e1af7827f9sj79',
-    'bf2bf2252c37a041b0tbvs',
     'ecoflow',
+    KITCHEN_LIGHT_DEVICE_ID,
+    TH_SENSOR_DEVICE_ID,
 ];
 
 function sortDevices(devices) {
@@ -43,6 +59,7 @@ function mapTuyaResultToDevice(result) {
         deviceName,
         isOnline: result.isOnline,
         responseTimeMs: result.responseTimeMs ?? null,
+        switchOn: result.isOnline ? result.switchOn : null,
         powerConsumptionW: result.isOnline ? result.powerConsumptionW : null,
         voltageV: result.isOnline ? result.voltageV : null,
         ecoflowChargePercent: null,
@@ -59,6 +76,7 @@ function mapDbRowToDevice(row) {
         deviceName: row.device_name,
         isOnline: row.is_online === 1,
         responseTimeMs: row.response_time_ms,
+        switchOn: row.switch_on != null ? row.switch_on === 1 : null,
         powerConsumptionW: row.power_consumption_w != null ? Number(row.power_consumption_w) : null,
         voltageV: row.voltage_v != null ? Number(row.voltage_v) : null,
         ecoflowChargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
@@ -77,6 +95,7 @@ function mapEcoflowToDevice({ chargeLevel, voltageV, consumptionW, inputW }) {
         deviceName: 'Экофлошка',
         isOnline: hasData,
         responseTimeMs: null,
+        switchOn: null,
         powerConsumptionW: consumptionW,
         powerInputW: inputW,
         voltageV: voltageV,
@@ -126,7 +145,8 @@ app.post('/monitor', async (req, res) => {
                             chargeLevel,
                             null,
                             null, // temperatureC
-                            null  // humidityPercent
+                            null, // humidityPercent
+                            null  // switchOn
                         );
                         const parts = [];
                         if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
@@ -168,6 +188,7 @@ app.post('/monitor', async (req, res) => {
                     
                     const temperatureToSave = result.isOnline && result.temperatureC != null ? result.temperatureC : null;
                     const humidityToSave = result.isOnline && result.humidityPercent != null ? result.humidityPercent : null;
+                    const switchToSave = result.isOnline ? result.switchOn : null;
                     await db.savePowerStatus(
                         saveDeviceId,
                         saveDeviceName,
@@ -178,7 +199,8 @@ app.post('/monitor', async (req, res) => {
                         null, // ecoflowChargePercent - только для экофлошки
                         result.error,
                         temperatureToSave,
-                        humidityToSave
+                        humidityToSave,
+                        switchToSave
                     );
                 } catch (dbError) {
                     // Логируем ошибку БД, но продолжаем с реальными данными устройства
@@ -211,7 +233,8 @@ app.post('/monitor', async (req, res) => {
                         null, // ecoflowChargePercent
                         error.message,
                         null, // temperatureC
-                        null  // humidityPercent
+                        null, // humidityPercent
+                        null  // switchOn
                     );
                 } catch (dbError) {
                     console.error(`Не удалось сохранить ошибку в БД: ${dbError.message}`);
@@ -287,6 +310,45 @@ app.get('/monitor', async (req, res) => {
         });
     } catch (error) {
         console.error('Ошибка live-проверки устройств:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+        });
+    }
+});
+
+/**
+ * POST /api/control — вкл/выкл розетки или света
+ * Body: { deviceId: string, on: boolean }
+ */
+app.post('/api/control', async (req, res) => {
+    try {
+        const { deviceId, on } = req.body || {};
+
+        if (!deviceId || typeof on !== 'boolean') {
+            return res.status(400).json({
+                success: false,
+                error: 'Требуются deviceId (string) и on (boolean)',
+            });
+        }
+
+        if (!CONTROLLABLE_DEVICE_IDS.has(deviceId)) {
+            return res.status(400).json({
+                success: false,
+                error: `Устройство ${deviceId} не поддерживает управление`,
+            });
+        }
+
+        const tuyaDeviceId = CONTROL_ID_MAP[deviceId];
+        await tuya.sendDeviceCommand(tuyaDeviceId, { code: 'switch_1', value: on });
+
+        res.json({
+            success: true,
+            deviceId,
+            switchOn: on,
+        });
+    } catch (error) {
+        console.error('Ошибка управления устройством:', error);
         res.status(500).json({
             success: false,
             error: error.message,
@@ -619,6 +681,7 @@ app.get('/', (req, res) => {
             monitor: 'POST /monitor - Проверка и запись в БД (Cloud Scheduler)',
             monitorLive: 'GET /monitor - Live-снимок всех устройств (без записи в БД)',
             current: 'GET /api/current - Последний снимок из БД',
+            control: 'POST /api/control - Вкл/выкл розетки или света',
             stats: 'GET /api/stats - Статистика за период',
             daily: 'GET /api/daily - Данные для графика по дням',
             dailyDetails: 'GET /api/daily-details - Детальные данные за день',

@@ -47,20 +47,21 @@ async function closePool() {
 /**
  * Записывает результат проверки устройства в базу данных
  */
-async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null) {
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null, switchOn = null) {
     const pool = getPool();
     
     try {
         const query = `
             INSERT INTO power_status 
-            (timestamp, device_id, device_name, is_online, response_time_ms, power_consumption_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, device_id, device_name, is_online, switch_on, response_time_ms, power_consumption_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await pool.execute(query, [
             deviceId,
             deviceName,
             isOnline ? 1 : 0,
+            switchOn === null || switchOn === undefined ? null : (switchOn ? 1 : 0),
             responseTimeMs,
             powerConsumptionW,
             voltageV,
@@ -537,6 +538,7 @@ async function getCurrentStatus() {
                 ps.device_id,
                 ps.device_name,
                 ps.is_online,
+                ps.switch_on,
                 ps.response_time_ms,
                 ps.power_consumption_w,
                 ps.voltage_v,

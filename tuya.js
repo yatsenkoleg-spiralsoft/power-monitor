@@ -12,7 +12,8 @@ const DEVICE_IDS = process.env.DEVICE_IDS
     : {
         'Розетка 1': 'bf3c70a960958bcf11ruml',
         'Розетка 2': 'bfcbd371e1af7827f9sj79',
-        'T & H Sensor': 'bf2bf2252c37a041b0tbvs'
+        'T & H Sensor': 'bf2bf2252c37a041b0tbvs',
+        'Свет на кухне': 'bf2a33ded6cd1955cbumtz',
     };
 
 let accessToken = null;
@@ -307,6 +308,8 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         
         const responseTime = Date.now() - startTime;
         const { powerConsumptionW, voltageV, temperatureC, humidityPercent } = parseStatusMap(statusMap);
+        const switchRaw = statusMap['switch_1'];
+        const switchOn = switchRaw !== undefined && switchRaw !== null ? Boolean(switchRaw) : null;
         
         let isActuallyOnline = true;
         if (deviceInfo != null) {
@@ -324,6 +327,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             voltageV,
             temperatureC,
             humidityPercent,
+            switchOn,
             error: null,
             deviceId,
             deviceName
@@ -347,6 +351,7 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
             voltageV: null,
             temperatureC: null,
             humidityPercent: null,
+            switchOn: null,
             error: errorMessage,
             deviceId,
             deviceName
@@ -372,9 +377,24 @@ function resetToken() {
     tokenExpiryTime = null;
 }
 
+/**
+ * Отправляет команду устройству (вкл/выкл switch_1 и др.)
+ */
+async function sendDeviceCommand(deviceId, command) {
+    const path = `/v1.0/devices/${deviceId}/commands`;
+    const body = { commands: [command] };
+    const response = await makeTuyaRequest(path, 'POST', {}, body);
+    if (!response.data || !response.data.success) {
+        const msg = response.data?.msg || 'Не удалось отправить команду';
+        throw new Error(msg);
+    }
+    return response.data;
+}
+
 module.exports = {
     checkDeviceAvailability,
     getDevices,
+    sendDeviceCommand,
     resetToken,
     DEVICE_IDS
 };
