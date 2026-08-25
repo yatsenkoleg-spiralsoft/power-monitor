@@ -5,6 +5,7 @@ const db = require('./db');
 const ecoflow = require('./ecoflow');
 const gridPower = require('./gridPower');
 const fcm = require('./fcm');
+const notify = require('./notify');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -134,6 +135,18 @@ app.use((req, res, next) => {
 app.post('/monitor', async (req, res) => {
     try {
         console.log('Начало мониторинга розеток...');
+
+        const dbWrites = { ok: 0, fail: 0 };
+        async function savePowerStatusTracked(...args) {
+            try {
+                await db.savePowerStatus(...args);
+                dbWrites.ok += 1;
+                return true;
+            } catch (dbError) {
+                dbWrites.fail += 1;
+                throw dbError;
+            }
+        }
         
         // Получаем список устройств
         const devices = tuya.getDevices();
@@ -145,7 +158,7 @@ app.post('/monitor', async (req, res) => {
                 const { chargeLevel, voltageV, consumptionW } = await ecoflow.getEcoFlowVoltageAndConsumption();
                 if (chargeLevel !== null || voltageV !== null || consumptionW !== null) {
                     try {
-                        await db.savePowerStatus(
+                        await savePowerStatusTracked(
                             'ecoflow',
                             'Экофлошка',
                             true,
@@ -199,7 +212,7 @@ app.post('/monitor', async (req, res) => {
                     const temperatureToSave = result.isOnline && result.temperatureC != null ? result.temperatureC : null;
                     const humidityToSave = result.isOnline && result.humidityPercent != null ? result.humidityPercent : null;
                     const switchToSave = result.isOnline ? result.switchOn : null;
-                    await db.savePowerStatus(
+                    await savePowerStatusTracked(
                         saveDeviceId,
                         saveDeviceName,
                         result.isOnline,
@@ -233,7 +246,7 @@ app.post('/monitor', async (req, res) => {
                         ? HEATER_DEVICE_ID : device.id;
                     const saveDeviceName = (device.id === SOCKET1_DEVICE_ID && now >= SOCKET1_HEATER_CUTOFF_UTC)
                         ? HEATER_DEVICE_NAME : device.name;
-                    await db.savePowerStatus(
+                    await savePowerStatusTracked(
                         saveDeviceId,
                         saveDeviceName,
                         false,
@@ -268,8 +281,16 @@ app.post('/monitor', async (req, res) => {
         // Подсчитываем статистику
         const onlineCount = results.filter(r => r.isOnline).length;
         const offlineCount = results.length - onlineCount;
+        const dbAttempts = dbWrites.ok + dbWrites.fail;
+        const dbOk = dbAttempts > 0 ? dbWrites.ok > 0 : true;
         
-        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло (API): ${ecoflowCharge.toFixed(1)}%` : ''}`);
+        console.log(`Мониторинг завершен. Онлайн: ${onlineCount}, Оффлайн: ${offlineCount}${ecoflowCharge !== null ? `, Экофло (API): ${ecoflowCharge.toFixed(1)}%` : ''}, dbOk=${dbOk} (ok=${dbWrites.ok}/fail=${dbWrites.fail})`);
+
+        try {
+            await notify.recordMonitorDbHealth(dbOk);
+        } catch (smsError) {
+            console.error('Ошибка SMS DB health notify:', smsError.message);
+        }
 
         try {
             const socketResult = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
@@ -307,6 +328,8 @@ app.post('/monitor', async (req, res) => {
 
         res.json({
             success: true,
+            dbOk,
+            dbWrites,
             timestamp: new Date().toISOString(),
             devicesChecked: results.length,
             online: onlineCount,

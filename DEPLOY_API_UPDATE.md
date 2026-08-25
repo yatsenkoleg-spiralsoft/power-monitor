@@ -1,4 +1,4 @@
-# Деплой power-monitor: виджет + FCM
+# Деплой power-monitor: виджет + FCM + MySQL Telegram alerts
 
 ## Новые endpoint'ы
 
@@ -7,6 +7,13 @@
 - `GET /api/widget` — `{ gridPresent, chargePercent, updatedAt }` для виджета
 
 `POST /monitor` при смене сети (2 мин debounce) шлёт FCM с уведомлением; при изменении заряда EcoFlow на **≥1%** — тихий FCM только для виджета.
+
+При полном провале записи в MySQL (ни одного успешного `savePowerStatus` за прогон) после **3** минут подряд шлёт Telegram через  
+`https://sms.samber.in.ua/index.php?m=...`  
+(повтор не чаще чем раз в 30 мин; при восстановлении — `Roz: MySQL OK`).  
+В ответе `/monitor` есть `dbOk` / `dbWrites` для отладки. HTTP `success` для Scheduler не ломается.
+
+Опционально env: `ROZ_SMS_NOTIFY_URL` (default `https://sms.samber.in.ua/index.php`).
 
 ## Перед деплоем
 
@@ -31,6 +38,8 @@ curl "https://power-monitor-648695455182.europe-west1.run.app/api/widget"
 curl -X POST "https://power-monitor-648695455182.europe-west1.run.app/api/fcm/register" \
   -H "Content-Type: application/json" \
   -d '{"token":"test-token"}'
+# dbOk в ответе монитора:
+curl -X POST "https://power-monitor-648695455182.europe-west1.run.app/monitor"
 ```
 
 ## Android (ручные шаги)
