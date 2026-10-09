@@ -72,8 +72,20 @@ const DEVICE_SORT_ORDER = [
 
 function sortDevices(devices) {
     return [...devices].sort((a, b) => {
-        const ai = DEVICE_SORT_ORDER.indexOf(a.deviceId);
-        const bi = DEVICE_SORT_ORDER.indexOf(b.deviceId);
+        const aIsEcoflow = a.deviceId === 'ecoflow' || a.deviceId.startsWith('ecoflow-');
+        const bIsEcoflow = b.deviceId === 'ecoflow' || b.deviceId.startsWith('ecoflow-');
+        
+        // If both are ecoflow devices, sort alphabetically by deviceId
+        if (aIsEcoflow && bIsEcoflow) {
+            return a.deviceId.localeCompare(b.deviceId);
+        }
+        
+        // Replace ecoflow-* with 'ecoflow' for ordering purposes
+        const aId = aIsEcoflow ? 'ecoflow' : a.deviceId;
+        const bId = bIsEcoflow ? 'ecoflow' : b.deviceId;
+        
+        const ai = DEVICE_SORT_ORDER.indexOf(aId);
+        const bi = DEVICE_SORT_ORDER.indexOf(bId);
         const aOrder = ai === -1 ? 999 : ai;
         const bOrder = bi === -1 ? 999 : bi;
         return aOrder - bOrder;
@@ -175,39 +187,51 @@ app.post('/monitor', async (req, res) => {
         const devices = tuya.getDevices();
         console.log(`Найдено устройств для мониторинга: ${devices.length}`);
         
-        // Получаем заряд, напряжение и потребление экофлошки параллельно с проверкой розеток (один fetch)
+        // Получаем данные для всех EcoFlow устройств параллельно с проверкой розеток
         const ecoflowPromise = (async () => {
             try {
-                const { chargeLevel, voltageV, consumptionW } = await ecoflow.getEcoFlowVoltageAndConsumption();
-                if (chargeLevel !== null || voltageV !== null || consumptionW !== null) {
-                    try {
-                        await savePowerStatusTracked(
-                            'ecoflow',
-                            'Экофлошка',
-                            true,
-                            null,
-                            consumptionW,
-                            voltageV,
-                            chargeLevel,
-                            null,
-                            null, // temperatureC
-                            null, // humidityPercent
-                            null  // switchOn
-                        );
-                        const parts = [];
-                        if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
-                        if (voltageV !== null) parts.push(`напряжение ${voltageV.toFixed(1)} В`);
-                        if (consumptionW !== null) parts.push(`потребление ${consumptionW} Вт`);
-                        if (parts.length) console.log(`Экофлошка: ${parts.join(', ')}`);
-                    } catch (dbError) {
-                        console.error(`Ошибка сохранения данных экофлошки в БД:`, dbError.message);
+                const allDevices = await ecoflow.getEcoFlowDataForAllDevices();
+                const savedDevices = [];
+                
+                for (const device of allDevices) {
+                    const { deviceId, deviceName, chargeLevel, voltageV, consumptionW, inputW, error } = device;
+                    
+                    if (chargeLevel !== null || voltageV !== null || consumptionW !== null) {
+                        try {
+                            await savePowerStatusTracked(
+                                deviceId,
+                                deviceName,
+                                true,
+                                null,
+                                consumptionW,
+                                voltageV,
+                                chargeLevel,
+                                null,
+                                null, // temperatureC
+                                null, // humidityPercent
+                                null  // switchOn
+                            );
+                            const parts = [];
+                            if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
+                            if (voltageV !== null) parts.push(`напряжение ${voltageV.toFixed(1)} В`);
+                            if (consumptionW !== null) parts.push(`потребление ${consumptionW} Вт`);
+                            if (inputW !== null) parts.push(`вход ${inputW} Вт`);
+                            if (parts.length) console.log(`${deviceName}: ${parts.join(', ')}`);
+                            savedDevices.push({ deviceId, chargeLevel });
+                        } catch (dbError) {
+                            console.error(`Ошибка сохранения данных ${deviceName} в БД:`, dbError.message);
+                        }
+                    } else if (error) {
+                        console.log(`${deviceName}: ошибка - ${error}`);
+                    } else {
+                        console.log(`${deviceName}: не удалось получить данные`);
                     }
-                } else {
-                    console.log('Экофлошка: не удалось получить данные');
                 }
-                return chargeLevel;
+                
+                // For backward compatibility, return the first device's charge level
+                return savedDevices.length > 0 ? savedDevices[0].chargeLevel : null;
             } catch (error) {
-                console.error('Ошибка получения данных экофлошки:', error.message);
+                console.error('Ошибка получения данных EcoFlow устройств:', error.message);
                 return null;
             }
         })();
@@ -387,14 +411,29 @@ app.post('/monitor', async (req, res) => {
 app.get('/monitor', async (req, res) => {
     try {
         const devices = tuya.getDevices();
-        const [results, ecoflowData] = await Promise.all([
+        const [results, ecoflowDevices] = await Promise.all([
             Promise.all(devices.map(device => tuya.checkDeviceAvailability(device.id, device.name))),
-            ecoflow.getEcoFlowVoltageAndConsumption(),
+            ecoflow.getEcoFlowDataForAllDevices(),
         ]);
+
+        const ecoflowMapped = ecoflowDevices.map(device => ({
+            deviceId: device.deviceId,
+            deviceName: device.deviceName,
+            isOnline: device.chargeLevel !== null || device.voltageV !== null || device.consumptionW !== null,
+            responseTimeMs: null,
+            switchOn: null,
+            powerConsumptionW: device.consumptionW,
+            powerInputW: device.inputW,
+            voltageV: device.voltageV,
+            ecoflowChargePercent: device.chargeLevel,
+            temperatureC: null,
+            humidityPercent: null,
+            error: device.error,
+        }));
 
         const deviceList = sortDevices([
             ...results.map(mapTuyaResultToDevice),
-            mapEcoflowToDevice(ecoflowData),
+            ...ecoflowMapped,
         ]);
 
         res.json({
