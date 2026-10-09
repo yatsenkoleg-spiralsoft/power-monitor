@@ -51,14 +51,14 @@ async function closePool() {
 /**
  * Записывает результат проверки устройства в базу данных
  */
-async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null, switchOn = null) {
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null, switchOn = null, powerInputW = null) {
     const pool = getPool();
     
     try {
         const query = `
             INSERT INTO power_status 
-            (timestamp, device_id, device_name, is_online, switch_on, response_time_ms, power_consumption_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, device_id, device_name, is_online, switch_on, response_time_ms, power_consumption_w, power_input_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await pool.execute(query, [
@@ -68,6 +68,7 @@ async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = 
             switchOn === null || switchOn === undefined ? null : (switchOn ? 1 : 0),
             responseTimeMs,
             powerConsumptionW,
+            powerInputW,
             voltageV,
             ecoflowChargePercent,
             temperatureC,
@@ -101,7 +102,7 @@ async function getStats(deviceId = null, startDate = null, endDate = null) {
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                 -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
                 SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
             FROM power_status
             WHERE 1=1
         `;
@@ -186,7 +187,7 @@ async function getDailyChart(deviceId = null, days = 30) {
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                     -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
                     SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh,
-                    AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                    AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
                 FROM power_status
                 WHERE DATE(CONVERT_TZ(timestamp, '+00:00', 'Europe/Kiev')) = ${KYIV_DATE_SQL}
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -208,7 +209,7 @@ async function getDailyChart(deviceId = null, days = 30) {
                     AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                     -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
                     SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh,
-                    AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                    AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
                 FROM power_status
                 WHERE CONVERT_TZ(timestamp, '+00:00', 'Europe/Kiev') >= DATE_SUB(${KYIV_DATE_SQL}, INTERVAL ? DAY)
                 ${deviceId ? 'AND device_id = ?' : ''}
@@ -251,7 +252,7 @@ async function getOverallStats(deviceId = null, startDate = null, endDate = null
                 AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) as avg_power_w,
                 -- Потребление: power_w * (1/60) часа / 1000 = кВт·ч
                 SUM(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END) as total_consumption_kwh,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
+                AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent
             FROM power_status
             WHERE 1=1
         `;
@@ -379,7 +380,7 @@ async function getHourlyData(deviceId = null, startDate = null, endDate = null) 
                 -- Для агрегированных данных: средняя мощность * количество минут онлайн / 60 / 1000 (чтобы получить кВт·ч)
                 COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
                 AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
+                AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
                 AVG(temperature_c) as temperature_c,
                 AVG(humidity_percent) as humidity_percent
             FROM power_status
@@ -441,7 +442,7 @@ async function getTenMinuteData(deviceId = null, startDate = null, endDate = nul
                 -- Используем COALESCE чтобы вернуть 0 если нет данных
                 COALESCE(AVG(CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w END) * (SUM(is_online) / 60.0) / 1000.0, 0) as total_consumption_kwh,
                 AVG(CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v END) as voltage_v,
-                AVG(CASE WHEN device_id = 'ecoflow' AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
+                AVG(CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') AND ecoflow_charge_percent IS NOT NULL THEN ecoflow_charge_percent END) as ecoflow_charge_percent,
                 AVG(temperature_c) as temperature_c,
                 AVG(humidity_percent) as humidity_percent
             FROM power_status
@@ -496,7 +497,7 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 -- Потребление за минуту: power_w * (1/60) часа / 1000 = кВт·ч
                 CASE WHEN is_online = 1 AND power_consumption_w IS NOT NULL THEN power_consumption_w * (1.0 / 60.0) / 1000.0 ELSE 0 END as total_consumption_kwh,
                 CASE WHEN is_online = 1 AND voltage_v IS NOT NULL THEN voltage_v ELSE NULL END as voltage_v,
-                CASE WHEN device_id = 'ecoflow' THEN ecoflow_charge_percent ELSE NULL END as ecoflow_charge_percent,
+                CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') THEN ecoflow_charge_percent ELSE NULL END as ecoflow_charge_percent,
                 temperature_c,
                 humidity_percent
             FROM power_status
@@ -545,6 +546,7 @@ async function getCurrentStatus() {
                 ps.switch_on,
                 ps.response_time_ms,
                 ps.power_consumption_w,
+                ps.power_input_w,
                 ps.voltage_v,
                 ps.ecoflow_charge_percent,
                 ps.temperature_c,
@@ -726,13 +728,17 @@ async function recordWidgetPush(gridPresent, chargePercent) {
 /**
  * Latest snapshot for widget API.
  * @param {string} socketDeviceId
- * @param {string} ecoflowDeviceId
+ * @param {string} ecoflowDeviceId - legacy device ID, will also match ecoflow* pattern
  * @param {(isOnline: boolean, voltageV: number|null) => boolean|null} computeGridPresent
  */
 async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeGridPresent) {
     const rows = await getCurrentStatus();
     const socketRow = rows.find((row) => row.device_id === socketDeviceId);
-    const ecoflowRow = rows.find((row) => row.device_id === ecoflowDeviceId);
+    
+    // Find any EcoFlow device (legacy 'ecoflow' or new 'ecoflow2', 'ecoflow3', etc.)
+    // Prefer the primary station; fall back to any other ecoflow* device
+    const ecoflowRow = rows.find((row) => row.device_id === ecoflowDeviceId)
+        || rows.find((row) => typeof row.device_id === 'string' && row.device_id.startsWith('ecoflow'));
 
     const gridPresent = socketRow
         ? computeGridPresent(socketRow.is_online === 1, socketRow.voltage_v != null ? Number(socketRow.voltage_v) : null)

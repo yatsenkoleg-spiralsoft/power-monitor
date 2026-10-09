@@ -16,12 +16,21 @@
 - `MYSQL_USER` - Пользователь MySQL (обязательно)
 - `MYSQL_PASSWORD` - Пароль MySQL (обязательно)
 
+**EcoFlow API:**
+- `ECOFLOW_ACCESS_KEY` - Access Key для EcoFlow API (обязательно для мониторинга EcoFlow)
+- `ECOFLOW_SECRET_KEY` - Secret Key для EcoFlow API (обязательно для мониторинга EcoFlow)
+
 ### Опциональные переменные
 
 - `TUYA_API_URL` - URL Tuya API (по умолчанию: https://openapi.tuyaeu.com)
 - `MYSQL_PORT` - Порт MySQL (по умолчанию: 3306)
 - `DEVICE_IDS` - JSON строка с массивом устройств, например: `{"Розетка 1": "device_id_1", "Розетка 2": "device_id_2"}`
 - `PORT` - Порт для сервера (по умолчанию: 8080)
+
+**EcoFlow (опциональные):**
+- `ECOFLOW_DEVICE_SNS` - Список serial numbers EcoFlow устройств через запятую (например: `SN1234,SN5678`)
+- `ECOFLOW_DEVICE_SN` - Serial number одного EcoFlow устройства (для обратной совместимости, используется если `ECOFLOW_DEVICE_SNS` не установлен)
+- `ECOFLOW_HOST` - API хост EcoFlow (по умолчанию: https://api.ecoflow.com)
 
 ## API Endpoints
 
