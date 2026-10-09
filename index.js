@@ -6,6 +6,29 @@ const ecoflow = require('./ecoflow');
 const gridPower = require('./gridPower');
 const fcm = require('./fcm');
 const notify = require('./notify');
+const schedules = require('./schedules');
+const { createMysqlScheduleRepo } = require('./scheduleRepo');
+
+// История графиков отключений (YASNO + ДТЭК) — таблица outage_schedules (migrations/004_outage_schedules.sql)
+const SCHEDULES_ENABLED = process.env.SCHEDULES_ENABLED !== '0';
+const scheduleService = schedules.createScheduleService({ repo: createMysqlScheduleRepo(db.getPool) });
+const SCHEDULE_REFRESH_BUDGET_MS = 9000;   // не держим ответ Scheduler'у дольше этого
+
+async function refreshSchedulesWithinBudget() {
+    if (!SCHEDULES_ENABLED) return { skipped: 'disabled' };
+    let timer;
+    try {
+        return await Promise.race([
+            scheduleService.maybeRefresh(),
+            new Promise((resolve) => { timer = setTimeout(() => resolve({ skipped: 'timeout' }), SCHEDULE_REFRESH_BUDGET_MS); }),
+        ]);
+    } catch (e) {
+        console.error('Ошибка обновления графиков:', e.message);
+        return { error: e.message };
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -326,10 +349,15 @@ app.post('/monitor', async (req, res) => {
             console.error('Ошибка обработки grid state / FCM:', notifyError.message);
         }
 
+        // Графики отключений: реально опрашиваются не чаще раза в 15 мин (SCHEDULE_REFRESH_MINUTES).
+        // Ждём ДО ответа: после ответа Cloud Run урезает CPU, и фоновая работа может не выполниться.
+        const schedulesResult = await refreshSchedulesWithinBudget();
+
         res.json({
             success: true,
             dbOk,
             dbWrites,
+            schedules: schedulesResult,
             timestamp: new Date().toISOString(),
             devicesChecked: results.length,
             online: onlineCount,
@@ -495,6 +523,12 @@ app.post('/api/control', async (req, res) => {
 /**
  * GET /api/current — последний снимок из БД (быстрый, ~1 мин свежести)
  */
+/**
+ * GET /api/schedules?group=49.1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD[&source=yasno|dtek][&versions=1]
+ * История графиков отключений: по каждому дню актуальная версия от каждого источника (+ все версии при versions=1).
+ */
+schedules.registerScheduleRoutes(app, scheduleService);
+
 app.get('/api/current', async (req, res) => {
     try {
         const rows = await db.getCurrentStatus();
@@ -884,6 +918,7 @@ app.get('/', (req, res) => {
             powerDetails: 'GET /api/power-details - Детальные данные о потреблении за день',
             hourly: 'GET /api/hourly - Почасовые данные за период',
             minute: 'GET /api/minute - Поминутные данные за период',
+            schedules: 'GET /api/schedules?group=49.1&startDate&endDate - История графиков отключений (YASNO/ДТЭК)',
             health: 'GET /health - Проверка состояния сервиса'
         }
     });
