@@ -72,15 +72,18 @@ const DEVICE_SORT_ORDER = [
 
 function sortDevices(devices) {
     return [...devices].sort((a, b) => {
-        const aIsEcoflow = a.deviceId === 'ecoflow' || a.deviceId.startsWith('ecoflow-');
-        const bIsEcoflow = b.deviceId === 'ecoflow' || b.deviceId.startsWith('ecoflow-');
+        const aIsEcoflow = a.deviceId === 'ecoflow' || a.deviceId.startsWith('ecoflow');
+        const bIsEcoflow = b.deviceId === 'ecoflow' || b.deviceId.startsWith('ecoflow');
         
-        // If both are ecoflow devices, sort alphabetically by deviceId
+        // If both are ecoflow devices, sort by deviceId (ecoflow, ecoflow2, ecoflow3...)
         if (aIsEcoflow && bIsEcoflow) {
-            return a.deviceId.localeCompare(b.deviceId);
+            // Extract number from deviceId (ecoflow -> 0, ecoflow2 -> 2, etc.)
+            const aNum = a.deviceId === 'ecoflow' ? 0 : parseInt(a.deviceId.replace('ecoflow', '')) || 0;
+            const bNum = b.deviceId === 'ecoflow' ? 0 : parseInt(b.deviceId.replace('ecoflow', '')) || 0;
+            return aNum - bNum;
         }
         
-        // Replace ecoflow-* with 'ecoflow' for ordering purposes
+        // Replace ecoflow* with 'ecoflow' for ordering purposes
         const aId = aIsEcoflow ? 'ecoflow' : a.deviceId;
         const bId = bIsEcoflow ? 'ecoflow' : b.deviceId;
         
@@ -126,7 +129,7 @@ function mapDbRowToDevice(row) {
         powerConsumptionW: row.power_consumption_w != null ? Number(row.power_consumption_w) : null,
         voltageV: row.voltage_v != null ? Number(row.voltage_v) : null,
         ecoflowChargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
-        powerInputW: null,
+        powerInputW: row.power_input_w != null ? Number(row.power_input_w) : null,
         temperatureC: row.temperature_c != null ? Number(row.temperature_c) : null,
         humidityPercent: row.humidity_percent != null ? Number(row.humidity_percent) : null,
         error: row.error_message ?? null,
@@ -194,9 +197,9 @@ app.post('/monitor', async (req, res) => {
                 const savedDevices = [];
                 
                 for (const device of allDevices) {
-                    const { deviceId, deviceName, chargeLevel, voltageV, consumptionW, inputW, error } = device;
+                    const { deviceId, deviceName, chargeLevel, voltageV, consumptionW, inputW, temperatureC, error } = device;
                     
-                    if (chargeLevel !== null || voltageV !== null || consumptionW !== null) {
+                    if (chargeLevel !== null || voltageV !== null || consumptionW !== null || inputW !== null) {
                         try {
                             await savePowerStatusTracked(
                                 deviceId,
@@ -207,15 +210,17 @@ app.post('/monitor', async (req, res) => {
                                 voltageV,
                                 chargeLevel,
                                 null,
-                                null, // temperatureC
+                                temperatureC,
                                 null, // humidityPercent
-                                null  // switchOn
+                                null, // switchOn
+                                inputW
                             );
                             const parts = [];
                             if (chargeLevel !== null) parts.push(`заряд ${chargeLevel.toFixed(1)}%`);
                             if (voltageV !== null) parts.push(`напряжение ${voltageV.toFixed(1)} В`);
                             if (consumptionW !== null) parts.push(`потребление ${consumptionW} Вт`);
                             if (inputW !== null) parts.push(`вход ${inputW} Вт`);
+                            if (temperatureC !== null) parts.push(`температура ${temperatureC}°C`);
                             if (parts.length) console.log(`${deviceName}: ${parts.join(', ')}`);
                             savedDevices.push({ deviceId, chargeLevel });
                         } catch (dbError) {
@@ -419,14 +424,16 @@ app.get('/monitor', async (req, res) => {
         const ecoflowMapped = ecoflowDevices.map(device => ({
             deviceId: device.deviceId,
             deviceName: device.deviceName,
-            isOnline: device.chargeLevel !== null || device.voltageV !== null || device.consumptionW !== null,
+            deviceSn: device.deviceSn,
+            model: device.model,
+            isOnline: device.chargeLevel !== null || device.voltageV !== null || device.consumptionW !== null || device.inputW !== null,
             responseTimeMs: null,
             switchOn: null,
             powerConsumptionW: device.consumptionW,
             powerInputW: device.inputW,
             voltageV: device.voltageV,
             ecoflowChargePercent: device.chargeLevel,
-            temperatureC: null,
+            temperatureC: device.temperatureC,
             humidityPercent: null,
             error: device.error,
         }));

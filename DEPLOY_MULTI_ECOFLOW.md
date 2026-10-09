@@ -2,7 +2,7 @@
 
 ## Обзор изменений
 
-Добавлена поддержка мониторинга нескольких устройств EcoFlow одновременно. Каждое устройство теперь сохраняется в базе данных с уникальным `device_id` на основе его серийного номера.
+Добавлена поддержка мониторинга нескольких устройств EcoFlow одновременно. Каждое устройство теперь сохраняется в базе данных с уникальным `device_id` (например: `ecoflow`, `ecoflow2`, `ecoflow3`), что позволяет независимо отслеживать несколько станций.
 
 ## Изменения в коде
 
@@ -10,15 +10,26 @@
    - Добавлена функция `getConfiguredDevices()` для получения списка устройств из переменных окружения
    - Обновлён кэш для работы с несколькими устройствами (per-device кэширование)
    - Добавлена новая функция `getEcoFlowDataForAllDevices()` для получения данных со всех устройств
+   - Добавлена поддержка извлечения температуры (`bms_bmsStatus.temp`) и модели устройства
    - Функции `getEcoFlowVoltageAndConsumption()` и `getEcoFlowChargeLevel()` помечены как deprecated, но оставлены для обратной совместимости
 
 2. **index.js**:
-   - Обновлён endpoint `POST /monitor` для записи данных всех EcoFlow устройств
-   - Обновлён endpoint `GET /monitor` для отображения всех EcoFlow устройств
-   - Обновлена функция `sortDevices()` для правильной сортировки нескольких устройств EcoFlow
+   - Обновлён endpoint `POST /monitor` для записи данных всех EcoFlow устройств с полями `powerInputW` и `temperatureC`
+   - Обновлён endpoint `GET /monitor` для отображения всех EcoFlow устройств с полями `deviceSn`, `model`, `powerInputW`, `temperatureC`
+   - Обновлена функция `sortDevices()` для правильной сортировки нескольких устройств EcoFlow (`ecoflow`, `ecoflow2`, `ecoflow3`...)
+   - Обновлён `mapDbRowToDevice()` для чтения `power_input_w` из БД
 
 3. **db.js**:
-   - Обновлены SQL-запросы для работы с паттерном `ecoflow-*` в дополнение к legacy `ecoflow`
+   - Обновлена функция `savePowerStatus()` для записи `power_input_w`
+   - Обновлены SQL-запросы для работы с паттерном `ecoflow%` (включает `ecoflow`, `ecoflow2`, `ecoflow3`, и т.д.)
+   - Обновлена функция `getLatestWidgetSnapshot()` для поиска любого EcoFlow устройства
+   - Обновлён `getCurrentStatus()` для чтения `power_input_w`
+
+4. **Миграция БД**:
+   - Добавлена миграция `005_add_power_input.sql` для добавления колонки `power_input_w`
+
+5. **README.md**:
+   - Добавлена документация по новым переменным окружения
    - Обновлена функция `getLatestWidgetSnapshot()` для поиска любого EcoFlow устройства
 
 4. **README.md**:
@@ -64,22 +75,72 @@
 
 ## Изменения в базе данных
 
-**Не требуется миграция!** Существующая схема `power_status` уже поддерживает произвольные `device_id`.
+**Требуется выполнить миграцию!** См. `migrations/005_add_power_input.sql`
+
+### Миграция: Добавление колонки power_input_w
+
+```sql
+ALTER TABLE power_status
+    ADD COLUMN power_input_w DECIMAL(10,2) DEFAULT NULL COMMENT 'Входная мощность (заряд) в ваттах' AFTER power_consumption_w;
+```
+
+**Важно**: Выполните эту миграцию **ДО** деплоя нового кода.
 
 ### Структура device_id для EcoFlow устройств
 
-- Старый формат (для совместимости): `ecoflow`
-- Новый формат: `ecoflow-XXXX`, где `XXXX` — последние 4 символа серийного номера
-  - Пример: для `R331ZEB4ZFBK0319` → `ecoflow-0319`
+- Формат для одного устройства: `ecoflow`
+- Формат для нескольких устройств: `ecoflow`, `ecoflow2`, `ecoflow3`, ...
+  - Первое устройство из списка `ECOFLOW_DEVICE_SNS` получает `device_id = 'ecoflow'`
+  - Второе устройство получает `device_id = 'ecoflow2'`
+  - Третье устройство получает `device_id = 'ecoflow3'`
+  - И так далее
 
 ### Имена устройств
 
-- Старый формат: `Экофлошка`
-- Новый формат: `Экофлошка XXXX` (с последними 4 символами серийника)
+- Первое устройство: `Экофлошка`
+- Второе устройство: `Экофлошка 2`
+- Третье устройство: `Экофлошка 3`
+- И так далее
+
+### Новые поля в API
+
+Для каждого устройства EcoFlow в ответах API (`GET /monitor`, `GET /api/current`) будут доступны следующие поля:
+
+- `deviceId` - идентификатор устройства (`ecoflow`, `ecoflow2`, и т.д.)
+- `deviceName` - название устройства (`Экофлошка`, `Экофлошка 2`, и т.д.)
+- `deviceSn` - серийный номер устройства (полный, из `ECOFLOW_DEVICE_SNS`)
+- `model` - модель устройства (если доступна в API)
+- `ecoflowChargePercent` - уровень заряда батареи (%)
+- `powerInputW` - входная мощность (заряд) в Вт (`pd.wattsInSum`)
+- `powerConsumptionW` - выходная мощность (потребление) в Вт (`inv.outputWatts`)
+- `voltageV` - напряжение в сети (В)
+- `temperatureC` - температура батареи (°C) (`bms_bmsStatus.temp`)
+- `isOnline` - доступность устройства
+- `recordedAt` - время записи (только в `GET /api/current`)
 
 ## Инструкции по деплою
 
-### Шаг 1: Обновить переменные окружения в Cloud Run
+### Шаг 1: Выполнить миграцию БД
+
+**Важно**: Выполните миграцию БД **ДО** деплоя кода!
+
+Подключитесь к MySQL и выполните:
+
+```sql
+-- Миграция 005: добавление колонки power_input_w
+ALTER TABLE power_status
+    ADD COLUMN power_input_w DECIMAL(10,2) DEFAULT NULL COMMENT 'Входная мощность (заряд) в ваттах' AFTER power_consumption_w;
+```
+
+Проверьте, что колонка добавлена:
+
+```sql
+DESCRIBE power_status;
+```
+
+Ожидаемый результат: колонка `power_input_w` должна быть в списке после `power_consumption_w`.
+
+### Шаг 2: Обновить переменные окружения в Cloud Run
 
 Добавьте новую переменную окружения в сервисе Cloud Run `power-monitor`:
 
@@ -98,7 +159,7 @@ gcloud run services update power-monitor \
 - Либо удалите `ECOFLOW_DEVICE_SN` и используйте только `ECOFLOW_DEVICE_SNS` со всеми устройствами
 - Либо оставьте оба параметра — система будет мониторить все устройства
 
-### Шаг 2: Деплой кода
+### Шаг 3: Деплой кода
 
 Код деплоится автоматически при push в master через Cloud Build (настроено в `cloudbuild.yaml`).
 
@@ -111,7 +172,7 @@ Cloud Build автоматически:
 2. Загрузит его в Container Registry
 3. Задеплоит в Cloud Run
 
-### Шаг 3: Проверка работы
+### Шаг 4: Проверка работы
 
 После деплоя проверьте логи Cloud Run:
 
@@ -126,7 +187,7 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 - `Экофлошка XXXX: заряд X.X%, напряжение X.X В, потребление X Вт`
 - Для каждого устройства отдельная строка
 
-### Шаг 4: Проверка данных в БД
+### Шаг 5: Проверка данных в БД
 
 Подключитесь к MySQL и проверьте, что данные записываются:
 
@@ -142,7 +203,7 @@ ORDER BY last_record DESC;
 - Несколько строк с `device_id` вида `ecoflow-XXXX`
 - `last_record` должен быть свежим (в пределах нескольких минут)
 
-### Шаг 5: Проверка API
+### Шаг 6: Проверка API
 
 Проверьте, что API возвращает данные для всех устройств:
 
@@ -152,7 +213,8 @@ curl https://power-monitor-XXXXXXXX-ew.a.run.app/monitor | jq '.devices[] | sele
 
 Ожидаемый результат:
 - JSON с данными для каждого EcoFlow устройства
-- Каждое устройство имеет уникальный `deviceId` вида `ecoflow-XXXX`
+- Каждое устройство имеет уникальный `deviceId`: `ecoflow`, `ecoflow2`, и т.д.
+- Поля включают: `deviceSn`, `model`, `powerInputW`, `powerConsumptionW`, `ecoflowChargePercent`, `temperatureC`
 
 ## Обратная совместимость
 

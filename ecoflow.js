@@ -175,7 +175,7 @@ async function getEcoFlowVoltageAndConsumption(forceRefresh = false) {
 /**
  * Fetches data for all configured EcoFlow devices.
  * @param {boolean} forceRefresh - force cache refresh
- * @returns {Promise<Array<{ deviceSn: string, deviceId: string, deviceName: string, chargeLevel: number|null, voltageV: number|null, consumptionW: number|null, inputW: number|null, error: string|null }>>}
+ * @returns {Promise<Array<{ deviceSn: string, deviceId: string, deviceName: string, model: string|null, chargeLevel: number|null, voltageV: number|null, consumptionW: number|null, inputW: number|null, temperatureC: number|null, error: string|null }>>}
  */
 async function getEcoFlowDataForAllDevices(forceRefresh = false) {
     const devices = getConfiguredDevices();
@@ -184,7 +184,7 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
     }
 
     const results = await Promise.allSettled(
-        devices.map(async (deviceSn) => {
+        devices.map(async (deviceSn, index) => {
             try {
                 const { deviceState } = await fetchEcoFlowStatus(deviceSn, forceRefresh);
                 
@@ -201,32 +201,46 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
                 
                 const { voltageV, outputW, inputW } = getPowerFromState(deviceState);
                 
-                // Generate device ID from last 4 digits of SN
-                const last4 = deviceSn.slice(-4);
-                const deviceId = `ecoflow-${last4}`;
-                const deviceName = `Экофлошка ${last4}`;
+                // Extract temperature
+                let temperatureC = null;
+                const temp = deviceState['bms_bmsStatus.temp'] ?? deviceState['bms_emsStatus.bmsTemp'];
+                if (temp !== undefined && temp !== null) {
+                    const t = Number(temp);
+                    if (!isNaN(t)) temperatureC = t;
+                }
+                
+                // Extract model (if available)
+                const model = deviceState['model'] ?? null;
+                
+                // Generate simple device ID: "ecoflow" for first, "ecoflow2" for second, etc.
+                const deviceId = index === 0 ? 'ecoflow' : `ecoflow${index + 1}`;
+                const deviceName = index === 0 ? 'Экофлошка' : `Экофлошка ${index + 1}`;
                 
                 return {
                     deviceSn,
                     deviceId,
                     deviceName,
+                    model,
                     chargeLevel,
                     voltageV,
                     consumptionW: outputW,
                     inputW,
+                    temperatureC,
                     error: null,
                 };
             } catch (error) {
                 console.error(`Ошибка получения данных экофлошки ${deviceSn}:`, error.message);
-                const last4 = deviceSn.slice(-4);
+                const deviceId = index === 0 ? 'ecoflow' : `ecoflow${index + 1}`;
                 return {
                     deviceSn,
-                    deviceId: `ecoflow-${last4}`,
-                    deviceName: `Экофлошка ${last4}`,
+                    deviceId,
+                    deviceName: index === 0 ? 'Экофлошка' : `Экофлошка ${index + 1}`,
+                    model: null,
                     chargeLevel: null,
                     voltageV: null,
                     consumptionW: null,
                     inputW: null,
+                    temperatureC: null,
                     error: error.message,
                 };
             }
