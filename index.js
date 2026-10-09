@@ -234,7 +234,9 @@ app.post('/monitor', async (req, res) => {
                 }
                 
                 // For backward compatibility, return the first device's charge level
-                return savedDevices.length > 0 ? savedDevices[0].chargeLevel : null;
+                // (only the primary 'ecoflow' station drives widget/charge push)
+                const primary = savedDevices.find((d) => d.deviceId === 'ecoflow');
+                return primary ? primary.chargeLevel : null;
             } catch (error) {
                 console.error('Ошибка получения данных EcoFlow устройств:', error.message);
                 return null;

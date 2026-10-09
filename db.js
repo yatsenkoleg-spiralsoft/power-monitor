@@ -736,9 +736,9 @@ async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeG
     const socketRow = rows.find((row) => row.device_id === socketDeviceId);
     
     // Find any EcoFlow device (legacy 'ecoflow' or new 'ecoflow2', 'ecoflow3', etc.)
-    const ecoflowRow = rows.find((row) => 
-        row.device_id === ecoflowDeviceId || row.device_id.startsWith('ecoflow')
-    );
+    // Prefer the primary station; fall back to any other ecoflow* device
+    const ecoflowRow = rows.find((row) => row.device_id === ecoflowDeviceId)
+        || rows.find((row) => typeof row.device_id === 'string' && row.device_id.startsWith('ecoflow'));
 
     const gridPresent = socketRow
         ? computeGridPresent(socketRow.is_online === 1, socketRow.voltage_v != null ? Number(socketRow.voltage_v) : null)
