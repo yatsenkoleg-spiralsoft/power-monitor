@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const { gzipJson } = require('./gzipJson');
+const minuteQuery = require('./minuteQuery');
 const tuya = require('./tuya');
 const db = require('./db');
 const ecoflow = require('./ecoflow');
@@ -180,6 +182,7 @@ function mapEcoflowToDevice({ chargeLevel, voltageV, consumptionW, inputW }) {
 
 // Middleware
 app.use(cors()); // Разрешаем CORS для всех запросов
+app.use('/api', gzipJson); // gzip для больших JSON (поминутная история 0.4–4 МБ)
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -917,24 +920,26 @@ app.get('/api/ten-minute', async (req, res) => {
 
 /**
  * API endpoint для получения поминутных данных за период (для графика)
- * GET /api/minute?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * GET /api/minute?deviceId=xxx&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD[&fields=a,b,c]
  */
 app.get('/api/minute', async (req, res) => {
     try {
         const { deviceId, startDate, endDate } = req.query;
         
-        if (!startDate || !endDate) {
+        if (!minuteQuery.isValidDate(startDate) || !minuteQuery.isValidDate(endDate)) {
             return res.status(400).json({
                 success: false,
                 error: 'Требуются параметры startDate и endDate (YYYY-MM-DD)'
             });
         }
         
+        // ?fields=avg_power_w,is_online — вернуть только нужные графику поля (minute всегда есть).
+        const fields = minuteQuery.parseFields(req.query.fields);
         const minuteData = await db.getMinuteData(deviceId || null, startDate, endDate);
         
         res.json({
             success: true,
-            data: minuteData
+            data: minuteQuery.projectRows(minuteData, fields)
         });
     } catch (error) {
         console.error('Ошибка получения поминутных данных:', error);
