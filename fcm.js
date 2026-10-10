@@ -87,6 +87,59 @@ async function sendPowerStatusPush({ gridPresent, chargePercent, timestamp, noti
     };
 }
 
+/**
+ * Тихий data-only пуш «графики отключений изменились» — без notification-блока, приложение само обновит виджет.
+ * Приоритет normal: high-priority data без показа UI Android может понижать; collapseKey — схлопывает очередь.
+ * @param {{ group: string, date: string, hash: string }} payload
+ */
+async function sendScheduleUpdatePush({ group, date, hash }) {
+    if (!initFirebase()) {
+        return { sent: 0, failed: 0, skipped: true };
+    }
+    const tokens = await db.getAllFcmTokens();
+    if (!tokens.length) {
+        console.log('FCM: no registered tokens, skip schedule push');
+        return { sent: 0, failed: 0, skipped: true };
+    }
+    const message = {
+        data: {
+            type: 'schedule_update',
+            group: String(group || ''),
+            date: String(date || ''),
+            hash: String(hash || '').slice(0, 12),
+            timestamp: new Date().toISOString(),
+        },
+        android: {
+            priority: 'normal',
+            collapseKey: 'schedule_update',
+            ttl: 6 * 3600 * 1000,
+        },
+        tokens,
+    };
+    const response = await admin.messaging().sendEachForMulticast(message);
+    await cleanupInvalidTokens(response, tokens);
+    return { sent: response.successCount, failed: response.failureCount, skipped: false };
+}
+
+async function cleanupInvalidTokens(response, tokens) {
+    const invalidTokens = [];
+    response.responses.forEach((item, index) => {
+        if (!item.success) {
+            const code = item.error && item.error.code;
+            if (
+                code === 'messaging/registration-token-not-registered' ||
+                code === 'messaging/invalid-registration-token'
+            ) {
+                invalidTokens.push(tokens[index]);
+            }
+            console.warn(`FCM: token send failed: ${code || item.error?.message}`);
+        }
+    });
+    for (const token of invalidTokens) {
+        await db.removeFcmToken(token);
+    }
+}
+
 /** @deprecated use sendPowerStatusPush with notifyGridChange: true */
 async function sendGridChangeNotification(payload) {
     return sendPowerStatusPush({ ...payload, notifyGridChange: true });
@@ -94,5 +147,6 @@ async function sendGridChangeNotification(payload) {
 
 module.exports = {
     sendPowerStatusPush,
+    sendScheduleUpdatePush,
     sendGridChangeNotification,
 };

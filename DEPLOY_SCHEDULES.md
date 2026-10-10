@@ -110,3 +110,14 @@ node scripts/backfill-schedules.js --from 2026-01-28 --wait     # без ток�
 
 Страница сама использует `/api/schedules`, как только он появится. Пока эндпоинта нет (404), она восстанавливает графики
 прошлых дней прямо в браузере из той же истории GitHub (кеш в localStorage, не больше 31 нового дня за раз).
+
+## Тихий пуш при изменении графика (schedulePush.js)
+
+После каждого реального опроса источников считается sha1 «эффективного» графика очереди на сегодня+завтра
+(YASNO, а при аварийных/ожидании с пустыми слотами — ДТЭК; статус аварийных входит в хеш). Если хеш изменился
+относительно `schedule_push_state` (таблица создаётся автоматически, см. `migrations/006_schedule_push_state.sql`) —
+всем FCM-токенам уходит data-only сообщение `{type: "schedule_update", group, date, hash, timestamp}` без notification,
+priority normal, collapseKey `schedule_update`. Не чаще раза в 5 мин. Первый запуск только запоминает хеш (без пуша).
+
+Переменные: `SCHEDULE_PUSH_ENABLED=0` — выключить; `SCHEDULE_PUSH_GROUP` (по умолчанию `SCHEDULE_DEFAULT_GROUP`/`49.1`);
+`SCHEDULE_PUSH_DEBOUNCE_MINUTES` (по умолчанию 5).
