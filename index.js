@@ -220,19 +220,23 @@ app.post('/monitor', async (req, res) => {
                 const savedDevices = [];
                 
                 for (const device of allDevices) {
-                    const { deviceId, deviceName, chargeLevel, voltageV, consumptionW, inputW, temperatureC, error } = device;
+                    const { deviceId, deviceName, chargeLevel, voltageV, consumptionW, inputW, temperatureC, error, cloudOnline } = device;
+                    // Станция не на связи с облаком EcoFlow: значения из /quota/all — последние известные
+                    // (замёрзшие). Пишем их как есть, но с is_online=0 и пометкой, чтобы виджет/дашборд
+                    // не показывали старый заряд как актуальный.
+                    const cloudOffline = cloudOnline === false;
                     
                     if (chargeLevel !== null || voltageV !== null || consumptionW !== null || inputW !== null) {
                         try {
                             await savePowerStatusTracked(
                                 deviceId,
                                 deviceName,
-                                true,
+                                !cloudOffline,
                                 null,
                                 consumptionW,
                                 voltageV,
                                 chargeLevel,
-                                null,
+                                cloudOffline ? error : null,
                                 temperatureC,
                                 null, // humidityPercent
                                 null, // switchOn
@@ -244,8 +248,10 @@ app.post('/monitor', async (req, res) => {
                             if (consumptionW !== null) parts.push(`потребление ${consumptionW} Вт`);
                             if (inputW !== null) parts.push(`вход ${inputW} Вт`);
                             if (temperatureC !== null) parts.push(`температура ${temperatureC}°C`);
+                            if (cloudOffline) parts.push('НЕ В СЕТИ EcoFlow (значения устарели)');
                             if (parts.length) console.log(`${deviceName}: ${parts.join(', ')}`);
-                            savedDevices.push({ deviceId, chargeLevel });
+                            // Устаревший заряд не должен запускать пуши о заряде.
+                            savedDevices.push({ deviceId, chargeLevel: cloudOffline ? null : chargeLevel });
                         } catch (dbError) {
                             console.error(`Ошибка сохранения данных ${deviceName} в БД:`, dbError.message);
                         }
@@ -451,7 +457,8 @@ app.get('/monitor', async (req, res) => {
             deviceName: device.deviceName,
             deviceSn: device.deviceSn,
             model: device.model,
-            isOnline: device.chargeLevel !== null || device.voltageV !== null || device.consumptionW !== null || device.inputW !== null,
+            isOnline: device.cloudOnline !== false && (device.chargeLevel !== null || device.voltageV !== null || device.consumptionW !== null || device.inputW !== null),
+            cloudOnline: device.cloudOnline ?? null,
             responseTimeMs: null,
             switchOn: null,
             powerConsumptionW: device.consumptionW,
