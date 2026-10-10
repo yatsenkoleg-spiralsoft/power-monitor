@@ -14,12 +14,35 @@ const SCHEDULES_ENABLED = process.env.SCHEDULES_ENABLED !== '0';
 const scheduleService = schedules.createScheduleService({ repo: createMysqlScheduleRepo(db.getPool) });
 const SCHEDULE_REFRESH_BUDGET_MS = 9000;   // не держим ответ Scheduler'у дольше этого
 
+// Тихий FCM-пуш при изменении графика сегодня/завтра (виджет перечитывает графики). SCHEDULE_PUSH_ENABLED=0 — выключить.
+const SCHEDULE_PUSH_ENABLED = process.env.SCHEDULE_PUSH_ENABLED !== '0';
+const schedulePush = require('./schedulePush');
+const schedulePushService = schedulePush.createSchedulePushService({
+    scheduleService,
+    stateRepo: schedulePush.createMysqlPushStateRepo(db.getPool),
+    sendPush: (p) => fcm.sendScheduleUpdatePush(p),
+});
+
+async function refreshSchedulesAndPush() {
+    const result = await scheduleService.maybeRefresh();
+    // пушим только после реального опроса (не skipped): так дебаунс/частота совпадают с опросом источников
+    if (SCHEDULE_PUSH_ENABLED && result && !result.skipped) {
+        try {
+            result.push = await schedulePushService.check();
+        } catch (e) {
+            console.error('Ошибка schedule push:', e.message);
+            result.push = { error: e.message };
+        }
+    }
+    return result;
+}
+
 async function refreshSchedulesWithinBudget() {
     if (!SCHEDULES_ENABLED) return { skipped: 'disabled' };
     let timer;
     try {
         return await Promise.race([
-            scheduleService.maybeRefresh(),
+            refreshSchedulesAndPush(),
             new Promise((resolve) => { timer = setTimeout(() => resolve({ skipped: 'timeout' }), SCHEDULE_REFRESH_BUDGET_MS); }),
         ]);
     } catch (e) {
