@@ -9,7 +9,7 @@
  *   https://github.com/tolwi/hassio-ecoflow-cloud/issues/57
  *   https://github.com/berezhinskiy/ecoflow_exporter/issues/67
  *
- * Что делаем: на каждом опросе (не чаще KICK_MIN_INTERVAL_MS) коротко подключаемся к MQTT
+ * Что делаем: раз в ECOFLOW_MQTT_KICK_INTERVAL_MIN минут (по умолчанию 10) коротко подключаемся к MQTT
  * (учётка из GET /iot-open/sign/certification — только чтение), подписываемся на
  * /open/<account>/<sn>/quota, несколько секунд собираем сообщения и отключаемся.
  * Переподписка «будит» поток данных (как открытие приложения), а пришедшие значения сразу
@@ -31,7 +31,9 @@ function getMqtt() {
 }
 
 const CREDS_TTL_MS = 6 * 3600 * 1000;
-const KICK_MIN_INTERVAL_MS = 50 * 1000;
+// Как часто «будить» облако (подписка ~4 с). По умолчанию раз в 10 минут; env ECOFLOW_MQTT_KICK_INTERVAL_MIN.
+const KICK_INTERVAL_MIN = Number(process.env.ECOFLOW_MQTT_KICK_INTERVAL_MIN);
+const KICK_MIN_INTERVAL_MS = (Number.isFinite(KICK_INTERVAL_MIN) && KICK_INTERVAL_MIN > 0 ? KICK_INTERVAL_MIN : 10) * 60 * 1000 - 10 * 1000;
 const DEFAULT_WAIT_MS = Number(process.env.ECOFLOW_MQTT_WAIT_MS) || 4000;
 
 let credsCache = { creds: null, at: 0 };

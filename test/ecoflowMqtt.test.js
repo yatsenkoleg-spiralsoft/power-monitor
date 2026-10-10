@@ -40,3 +40,11 @@ test('kickAndCollect отключается env ECOFLOW_MQTT_KICK=0', async () =
         delete process.env.ECOFLOW_MQTT_KICK;
     }
 });
+
+test('kickAndCollect: второй пинок раньше интервала (по умолчанию 10 мин) пропускается', async () => {
+    let calls = 0;
+    const rest = { getMqttCredentials: async () => { calls += 1; throw new Error('no broker'); } };
+    await kickAndCollect(rest, ['SN1'], { waitMs: 10, force: true });
+    await kickAndCollect(rest, ['SN1'], { waitMs: 10 });
+    assert.equal(calls, 1);
+});
