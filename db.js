@@ -731,9 +731,12 @@ async function recordWidgetPush(gridPresent, chargePercent) {
  * @param {string} ecoflowDeviceId - legacy device ID, will also match ecoflow* pattern
  * @param {(isOnline: boolean, voltageV: number|null) => boolean|null} computeGridPresent
  */
-// Если значения станции не менялись дольше этого — считаем данные устаревшими
-// (облако EcoFlow отдаёт последние известные значения, даже когда станция не на связи).
-const ECOFLOW_STALE_MS = 30 * 60 * 1000;
+// Облако EcoFlow отдаёт последние известные значения, даже когда станция не на связи.
+// «Неизменные значения» сами по себе не признак: при 100% и сети станция часами не шлёт
+// обновлений (плато по 3–8 ч — норма). Противоречие же однозначное: света нет, а станция
+// «заряжается» (вход > 20 Вт) и значения не меняются ≥ 15 мин.
+const ECOFLOW_STALE_MS = 15 * 60 * 1000;
+const ECOFLOW_CHARGING_W = 20;
 
 /**
  * Когда значения EcoFlow-станции последний раз менялись (за последние 24 ч).
@@ -763,7 +766,7 @@ async function getEcoflowDataChangedAt(row) {
     return rows[0] && rows[0].changed_at ? new Date(rows[0].changed_at) : null;
 }
 
-async function describeEcoflowStation(row) {
+async function describeEcoflowStation(row, gridPresent) {
     if (!row) return null;
     let changedAt = null;
     try {
@@ -773,7 +776,9 @@ async function describeEcoflowStation(row) {
     }
     const online = row.is_online === 1;
     const changedMs = changedAt ? changedAt.getTime() : null;
-    const stale = !online || changedMs == null || Date.now() - changedMs > ECOFLOW_STALE_MS;
+    const inputW = row.power_input_w != null ? Number(row.power_input_w) : 0;
+    const unchangedLong = changedMs == null || Date.now() - changedMs > ECOFLOW_STALE_MS;
+    const stale = !online || (gridPresent === false && inputW > ECOFLOW_CHARGING_W && unchangedLong);
     return {
         deviceId: row.device_id,
         deviceName: row.device_name,
@@ -809,7 +814,7 @@ async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeG
     const ecoflowRows = rows
         .filter((row) => typeof row.device_id === 'string' && row.device_id.startsWith('ecoflow'))
         .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id)));
-    const stations = (await Promise.all(ecoflowRows.map(describeEcoflowStation))).filter(Boolean);
+    const stations = (await Promise.all(ecoflowRows.map((row) => describeEcoflowStation(row, gridPresent)))).filter(Boolean);
     const primary = ecoflowRow ? stations.find((s) => s.deviceId === ecoflowRow.device_id) : null;
 
     return {
