@@ -731,6 +731,59 @@ async function recordWidgetPush(gridPresent, chargePercent) {
  * @param {string} ecoflowDeviceId - legacy device ID, will also match ecoflow* pattern
  * @param {(isOnline: boolean, voltageV: number|null) => boolean|null} computeGridPresent
  */
+// Если значения станции не менялись дольше этого — считаем данные устаревшими
+// (облако EcoFlow отдаёт последние известные значения, даже когда станция не на связи).
+const ECOFLOW_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Когда значения EcoFlow-станции последний раз менялись (за последние 24 ч).
+ * null — не менялись все 24 ч (или нет данных).
+ */
+async function getEcoflowDataChangedAt(row) {
+    if (!row) return null;
+    const pool = getPool();
+    // Первая запись после последней отличающейся = момент, когда появились текущие значения.
+    // Всё считаем в SQL, чтобы не гонять даты через часовые пояса драйвера.
+    const [rows] = await pool.execute(
+        `SELECT MIN(p.timestamp) AS changed_at
+           FROM power_status p
+          WHERE p.device_id = ?
+            AND p.timestamp > (
+                SELECT MAX(q.timestamp)
+                  FROM power_status q
+                 WHERE q.device_id = ?
+                   AND q.timestamp > NOW() - INTERVAL 24 HOUR
+                   AND NOT (q.ecoflow_charge_percent <=> ?
+                            AND q.power_consumption_w <=> ?
+                            AND q.power_input_w <=> ?
+                            AND q.voltage_v <=> ?)
+            )`,
+        [row.device_id, row.device_id, row.ecoflow_charge_percent, row.power_consumption_w, row.power_input_w, row.voltage_v]
+    );
+    return rows[0] && rows[0].changed_at ? new Date(rows[0].changed_at) : null;
+}
+
+async function describeEcoflowStation(row) {
+    if (!row) return null;
+    let changedAt = null;
+    try {
+        changedAt = await getEcoflowDataChangedAt(row);
+    } catch (e) {
+        console.warn('getEcoflowDataChangedAt:', e.message);
+    }
+    const online = row.is_online === 1;
+    const changedMs = changedAt ? changedAt.getTime() : null;
+    const stale = !online || changedMs == null || Date.now() - changedMs > ECOFLOW_STALE_MS;
+    return {
+        deviceId: row.device_id,
+        deviceName: row.device_name,
+        chargePercent: row.ecoflow_charge_percent != null ? Number(row.ecoflow_charge_percent) : null,
+        online,
+        dataChangedAt: changedAt ? changedAt.toISOString() : null,
+        stale,
+    };
+}
+
 async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeGridPresent) {
     const rows = await getCurrentStatus();
     const socketRow = rows.find((row) => row.device_id === socketDeviceId);
@@ -753,9 +806,21 @@ async function getLatestWidgetSnapshot(socketDeviceId, ecoflowDeviceId, computeG
         return ts > latest ? ts : latest;
     }, 0);
 
+    const ecoflowRows = rows
+        .filter((row) => typeof row.device_id === 'string' && row.device_id.startsWith('ecoflow'))
+        .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id)));
+    const stations = (await Promise.all(ecoflowRows.map(describeEcoflowStation))).filter(Boolean);
+    const primary = ecoflowRow ? stations.find((s) => s.deviceId === ecoflowRow.device_id) : null;
+
     return {
         gridPresent,
+        // Старое поле оставлено как было (последнее известное значение) — для старых версий приложения.
         chargePercent,
+        // Новое: актуален ли заряд основной станции.
+        chargeStale: primary ? primary.stale : null,
+        chargeOnline: primary ? primary.online : null,
+        chargeChangedAt: primary ? primary.dataChangedAt : null,
+        stations,
         updatedAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : new Date().toISOString(),
     };
 }

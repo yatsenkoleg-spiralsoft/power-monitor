@@ -28,6 +28,45 @@ function getConfiguredDevices() {
 const CACHE_TTL_MS = 30 * 1000; // 30 секунд
 const deviceCache = new Map(); // Map<deviceSn, { state, cachedAt, inFlightFetch }>
 
+// --- Онлайн-статус станций в облаке EcoFlow ---
+// /quota/all отдаёт ПОСЛЕДНИЕ ИЗВЕСТНЫЕ значения даже когда станция давно не на связи
+// (например, пропал Wi-Fi или станция выключена) — заряд «замерзает». Поэтому отдельно
+// спрашиваем /device/list, где у каждой станции есть флаг online (0/1).
+const ONLINE_TTL_MS = 60 * 1000;
+let onlineCache = { map: null, cachedAt: 0, inFlight: null };
+
+/**
+ * @returns {Promise<Map<string, boolean>|null>} sn -> online; null если список получить не удалось
+ */
+async function getCloudOnlineMap() {
+    if (!ECOFLOW_ACCESS_KEY || !ECOFLOW_SECRET_KEY) return null;
+    const now = Date.now();
+    if (onlineCache.map && now - onlineCache.cachedAt < ONLINE_TTL_MS) return onlineCache.map;
+    if (onlineCache.inFlight) return onlineCache.inFlight;
+    onlineCache.inFlight = (async () => {
+        try {
+            const client = new RestClient({
+                accessKey: ECOFLOW_ACCESS_KEY,
+                secretKey: ECOFLOW_SECRET_KEY,
+                host: ECOFLOW_HOST,
+            });
+            const response = await client.getDevicesPlain();
+            const list = Array.isArray(response?.data) ? response.data : [];
+            const map = new Map();
+            for (const d of list) {
+                if (d && d.sn) map.set(String(d.sn), Number(d.online) === 1 || d.online === true);
+            }
+            onlineCache = { map, cachedAt: Date.now(), inFlight: null };
+            return map;
+        } catch (err) {
+            console.warn('EcoFlow device/list недоступен:', err.message);
+            onlineCache.inFlight = null;
+            return onlineCache.map; // последнее известное (или null)
+        }
+    })();
+    return onlineCache.inFlight;
+}
+
 /**
  * Выполняет запросы к API EcoFlow и возвращает состояние устройства.
  * Результат кэшируется на короткое время для оптимизации.
@@ -183,8 +222,12 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
         return [];
     }
 
+    const onlineMap = await getCloudOnlineMap().catch(() => null);
+
     const results = await Promise.allSettled(
         devices.map(async (deviceSn, index) => {
+            // true/false — по данным облака EcoFlow; null — неизвестно
+            const cloudOnline = onlineMap && onlineMap.has(deviceSn) ? onlineMap.get(deviceSn) : null;
             try {
                 const { deviceState } = await fetchEcoFlowStatus(deviceSn, forceRefresh);
                 
@@ -226,7 +269,8 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
                     consumptionW: outputW,
                     inputW,
                     temperatureC,
-                    error: null,
+                    cloudOnline,
+                    error: cloudOnline === false ? 'Станция не в сети EcoFlow (данные устарели)' : null,
                 };
             } catch (error) {
                 console.error(`Ошибка получения данных экофлошки ${deviceSn}:`, error.message);
@@ -241,6 +285,7 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
                     consumptionW: null,
                     inputW: null,
                     temperatureC: null,
+                    cloudOnline,
                     error: error.message,
                 };
             }
@@ -292,5 +337,6 @@ module.exports = {
     getEcoFlowVoltageAndConsumption,
     getEcoFlowDataForAllDevices,
     getConfiguredDevices,
+    getCloudOnlineMap,
     fetchEcoFlowStatus
 };
