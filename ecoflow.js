@@ -1,5 +1,6 @@
 const pkg = require('@ecoflow-api/rest-client');
 const { RestClient } = pkg;
+const ecoflowMqtt = require('./ecoflowMqtt');
 
 // --- Настройки EcoFlow ---
 const ECOFLOW_ACCESS_KEY = process.env.ECOFLOW_ACCESS_KEY;
@@ -222,14 +223,24 @@ async function getEcoFlowDataForAllDevices(forceRefresh = false) {
         return [];
     }
 
-    const onlineMap = await getCloudOnlineMap().catch(() => null);
+    // Сначала «будим» облако через MQTT-подписку (иначе /quota/all часами отдаёт замёрзший кэш)
+    // и параллельно узнаём онлайн-статус. Свежие MQTT-значения накладываем поверх HTTP.
+    const [onlineMap, mqttFresh] = await Promise.all([
+        getCloudOnlineMap().catch(() => null),
+        ecoflowMqtt.kickAndCollect(
+            new RestClient({ accessKey: ECOFLOW_ACCESS_KEY, secretKey: ECOFLOW_SECRET_KEY, host: ECOFLOW_HOST }),
+            devices
+        ).catch(() => new Map()),
+    ]);
 
     const results = await Promise.allSettled(
         devices.map(async (deviceSn, index) => {
             // true/false — по данным облака EcoFlow; null — неизвестно
             const cloudOnline = onlineMap && onlineMap.has(deviceSn) ? onlineMap.get(deviceSn) : null;
             try {
-                const { deviceState } = await fetchEcoFlowStatus(deviceSn, forceRefresh);
+                const { deviceState: httpState } = await fetchEcoFlowStatus(deviceSn, forceRefresh);
+                const fresh = mqttFresh && mqttFresh.get(deviceSn);
+                const deviceState = fresh ? { ...httpState, ...fresh } : httpState;
                 
                 const soc = deviceState['pd.soc'] ??
                     deviceState['bms_bmsStatus.soc'] ??
