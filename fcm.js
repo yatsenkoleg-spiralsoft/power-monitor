@@ -50,7 +50,10 @@ async function sendPowerStatusPush({ gridPresent, chargePercent, timestamp, noti
     const message = {
         data,
         android: {
-            priority: 'high',
+            // high только когда телефон показывает уведомление (смена сети); тихие обновления заряда — normal,
+            // иначе Android снижает приоритет приложения за high без уведомления.
+            priority: notifyGridChange ? 'high' : 'normal',
+            ttl: (notifyGridChange ? 30 : 10) * 60 * 1000,
         },
         tokens,
     };
@@ -113,7 +116,7 @@ async function sendScheduleUpdatePush({ group, date, hash, text = '', changes = 
             timestamp: new Date().toISOString(),
         },
         android: {
-            priority: 'normal',
+            priority: 'high',   // всегда показывается уведомлением
             collapseKey: 'schedule_update',
             ttl: 6 * 3600 * 1000,
         },
