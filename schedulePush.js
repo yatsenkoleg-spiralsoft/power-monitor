@@ -8,6 +8,7 @@
  */
 const crypto = require('crypto');
 const { kyivDateKey, addDays } = require('./schedules');
+const { describeScheduleChange } = require('./scheduleDiff');
 
 const isWaiting = (st) => /Waiting|NoSchedule/i.test(st || '');
 const isEmergency = (st) => /Emergency/i.test(st || '');
@@ -54,6 +55,34 @@ function createMysqlPushStateRepo(getPool) {
         return ensured;
     }
 
+    // снимок эффективного графика на момент последнего пуша — для текста «было → стало»
+    let ensuredSnap = null;
+    function ensureSnap() {
+        if (!ensuredSnap) {
+            ensuredSnap = pool().query(
+                `CREATE TABLE IF NOT EXISTS schedule_push_snapshot (
+                    push_key VARCHAR(32) PRIMARY KEY,
+                    eff_json MEDIUMTEXT NOT NULL,
+                    updated_at DATETIME NOT NULL COMMENT 'UTC'
+                )`
+            ).catch((e) => { ensuredSnap = null; throw e; });
+        }
+        return ensuredSnap;
+    }
+    async function getSnapshot(key) {
+        await ensureSnap();
+        const [rows] = await pool().query('SELECT eff_json FROM schedule_push_snapshot WHERE push_key = ?', [key]);
+        if (!rows.length) return null;
+        try { return JSON.parse(rows[0].eff_json); } catch (_) { return null; }
+    }
+    async function saveSnapshot(key, eff) {
+        await ensureSnap();
+        await pool().query(
+            `INSERT INTO schedule_push_snapshot (push_key, eff_json, updated_at) VALUES (?, ?, UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE eff_json = VALUES(eff_json), updated_at = UTC_TIMESTAMP()`,
+            [key, JSON.stringify(eff)]);
+    }
+
     /**
      * Атомарно «забирает» право на пуш. → { claimed: bool, reason: 'initialized'|'unchanged'|'debounced'|null }
      * Первая запись (нет строки) только сохраняет хеш — без пуша, чтобы деплой не будил все телефоны.
@@ -77,14 +106,18 @@ function createMysqlPushStateRepo(getPool) {
         return { claimed: false, reason: rows[0] && rows[0].content_hash === hash ? 'unchanged' : 'debounced' };
     }
 
-    return { claimPush };
+    return { claimPush, getSnapshot, saveSnapshot };
 }
 
 /** In-memory вариант (тесты). */
 function createMemoryPushStateRepo(clock = () => new Date()) {
     const state = {};
+    const snaps = {};
     return {
         state,
+        snaps,
+        async getSnapshot(key) { return snaps[key] ? JSON.parse(snaps[key]) : null; },
+        async saveSnapshot(key, eff) { snaps[key] = JSON.stringify(eff); },
         async claimPush(key, hash, debounceMinutes) {
             const s = state[key];
             if (!s) { state[key] = { hash, lastPushAt: null }; return { claimed: false, reason: 'initialized' }; }
@@ -114,11 +147,28 @@ function createSchedulePushService({
         const q = await scheduleService.query({ group, startDate: today, endDate: tomorrow });
         const eff = effectiveDays(q.days, [today, tomorrow]);
         const hash = effectiveHash(eff);
-        const claim = await stateRepo.claimPush(`schedule:${group}`, hash, debounceMinutes);
-        if (!claim.claimed) return { pushed: false, reason: claim.reason, hash: hash.slice(0, 12) };
-        const r = await sendPush({ group, date: today, hash });
+        const key = `schedule:${group}`;
+        const claim = await stateRepo.claimPush(key, hash, debounceMinutes);
+        const hasSnap = typeof stateRepo.getSnapshot === 'function' && typeof stateRepo.saveSnapshot === 'function';
+        if (!claim.claimed) {
+            if (claim.reason === 'initialized' && hasSnap) {
+                try { await stateRepo.saveSnapshot(key, eff); } catch (e) { log.error && log.error('schedule snapshot:', e.message); }
+            }
+            return { pushed: false, reason: claim.reason, hash: hash.slice(0, 12) };
+        }
+        let change = { text: '', days: [] };
+        if (hasSnap) {
+            try {
+                const prev = await stateRepo.getSnapshot(key);
+                if (prev) change = describeScheduleChange(prev, eff, { [today]: 'Сегодня', [tomorrow]: 'Завтра' });
+                await stateRepo.saveSnapshot(key, eff);
+            } catch (e) {
+                log.error && log.error('schedule diff:', e.message);
+            }
+        }
+        const r = await sendPush({ group, date: today, hash, text: change.text, changes: change.days });
         log.log && log.log(`FCM: schedule_update group=${group} hash=${hash.slice(0, 12)} sent=${r && r.sent} failed=${r && r.failed}`);
-        return { pushed: true, hash: hash.slice(0, 12), sent: r && r.sent, failed: r && r.failed };
+        return { pushed: true, hash: hash.slice(0, 12), text: change.text, sent: r && r.sent, failed: r && r.failed };
     }
 
     return { check };
