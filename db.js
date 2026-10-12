@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const minuteQuery = require('./minuteQuery');
 
 // Конфигурация подключения к MySQL из переменных окружения (обязательные параметры)
 const dbConfig = {
@@ -511,17 +512,19 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
             params.push(deviceId);
         }
         
+        // Границы суток по Киеву переводим в UTC заранее: условие по «голой» колонке timestamp
+        // использует индекс (device_id, timestamp) диапазоном, а не сканирует всю историю устройства.
         if (startDate) {
-            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\')) >= ?';
-            params.push(startDate);
+            query += ' AND timestamp >= ?';
+            params.push(minuteQuery.toSqlUtc(minuteQuery.kyivDayStartUtcMs(startDate)));
         }
         
         if (endDate) {
-            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\')) <= ?';
-            params.push(endDate);
+            query += ' AND timestamp < ?';
+            params.push(minuteQuery.toSqlUtc(minuteQuery.kyivDayStartUtcMs(minuteQuery.addDays(endDate, 1))));
         }
         
-        query += ' ORDER BY CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\') ASC, device_id';
+        query += ' ORDER BY timestamp ASC, device_id';
         
         const [rows] = await pool.execute(query, params);
         return rows;
