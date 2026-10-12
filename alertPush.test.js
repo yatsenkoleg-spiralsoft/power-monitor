@@ -1,0 +1,20 @@
+const assert = require('assert');
+const { computeTransitions, deriveState } = require('./alertPush');
+const S = (alert, bal, balSrc) => ({ ok: true, alert, bal, balSrc });
+let st = computeTransitions(null, S('none','none')); assert.strictEqual(st.events.length, 0);
+let p = st.next;
+const step = (c) => { const r = computeTransitions(p, c, 2); p = r.next; return r.events.map(e => e.type + (e.data.confirmed ? ':' + e.data.confirmed : '') + (e.data.upgrade ? '+up' : '') + (e.data.change ? '+ch' : '')); };
+assert.deepStrictEqual(step(S('drone','none')), ['alert_drone']);
+assert.deepStrictEqual(step(S('missile','q','neptun')), ['ballistic_start:0', 'alert_missile+ch']);
+assert.deepStrictEqual(step(S('missile','c','kd')), ['ballistic_start:1+up']);
+assert.deepStrictEqual(step(S('missile','q','pszsu')), []);
+assert.deepStrictEqual(step(S('missile','none')), []);
+assert.deepStrictEqual(step(S('missile','none')), ['ballistic_end:1']);
+assert.deepStrictEqual(step(S('none','none')), []);
+assert.deepStrictEqual(step(S('drone','none')), ['alert_drone+ch']); // ракеты сняли, дроны остались
+assert.deepStrictEqual(step(S('none','none')), []);
+assert.deepStrictEqual(step(S('none','none')), ['alert_end']);
+assert.deepStrictEqual(deriveState({ ok: true, alerts: [{}], uaRed: false, ballistic: false }), { ok: true, alert: 'drone', bal: 'none', balSrc: null });
+assert.deepStrictEqual(deriveState({ ok: true, alerts: [{}], uaRed: true, ballistic: true, ballisticSrc: 'ain' }).bal, 'c');
+assert.strictEqual(deriveState({ ok: false }).ok, false);
+console.log('alertPush tests OK');

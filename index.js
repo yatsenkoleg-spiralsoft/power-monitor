@@ -23,6 +23,24 @@ const schedulePushService = schedulePush.createSchedulePushService({
     sendPush: (p) => fcm.sendScheduleUpdatePush(p),
 });
 
+// FCM-пуши тревог по Киеву (баллистика / дроны / ракеты) по данным yasno alert.php. ALERT_PUSH_ENABLED=0 — выключить.
+const ALERT_PUSH_ENABLED = process.env.ALERT_PUSH_ENABLED !== '0';
+const alertPush = require('./alertPush');
+const alertPushService = alertPush.createAlertPushService({
+    stateRepo: alertPush.createMysqlAlertStateRepo(db.getPool),
+    sendPush: (p) => fcm.sendAlertPush(p),
+});
+
+async function checkAlertPush() {
+    if (!ALERT_PUSH_ENABLED) return { skipped: 'disabled' };
+    try {
+        return await alertPushService.check();
+    } catch (e) {
+        console.error('Ошибка alert push:', e.message);
+        return { error: e.message };
+    }
+}
+
 async function refreshSchedulesAndPush() {
     const result = await scheduleService.maybeRefresh();
     // пушим только после реального опроса (не skipped): так дебаунс/частота совпадают с опросом источников
@@ -411,13 +429,14 @@ app.post('/monitor', async (req, res) => {
 
         // Графики отключений: реально опрашиваются не чаще раза в 15 мин (SCHEDULE_REFRESH_MINUTES).
         // Ждём ДО ответа: после ответа Cloud Run урезает CPU, и фоновая работа может не выполниться.
-        const schedulesResult = await refreshSchedulesWithinBudget();
+        const [schedulesResult, alertsResult] = await Promise.all([refreshSchedulesWithinBudget(), checkAlertPush()]);
 
         res.json({
             success: true,
             dbOk,
             dbWrites,
             schedules: schedulesResult,
+            alerts: alertsResult,
             timestamp: new Date().toISOString(),
             devicesChecked: results.length,
             online: onlineCount,
