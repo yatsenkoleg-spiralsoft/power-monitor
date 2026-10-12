@@ -140,6 +140,36 @@ async function cleanupInvalidTokens(response, tokens) {
     }
 }
 
+/**
+ * Тревоги по Киеву (alertPush.js): data-сообщение, звук/канал выбирает телефон.
+ * @param {{ type: string } & Record<string,string>} payload  type: ballistic_start|ballistic_end|alert_drone|alert_missile|alert_end
+ */
+async function sendAlertPush(payload) {
+    if (!initFirebase()) {
+        return { sent: 0, failed: 0, skipped: true };
+    }
+    const tokens = await db.getAllFcmTokens();
+    if (!tokens.length) {
+        return { sent: 0, failed: 0, skipped: true };
+    }
+    const data = { timestamp: new Date().toISOString() };
+    for (const [k, v] of Object.entries(payload || {})) {
+        if (v != null) data[k] = String(v);
+    }
+    const isEnd = /_end$/.test(data.type || '');
+    const message = {
+        data,
+        android: {
+            priority: 'high',
+            ttl: (isEnd ? 30 : 10) * 60 * 1000,   // устаревшая тревога не нужна
+        },
+        tokens,
+    };
+    const response = await admin.messaging().sendEachForMulticast(message);
+    await cleanupInvalidTokens(response, tokens);
+    return { sent: response.successCount, failed: response.failureCount, skipped: false };
+}
+
 /** @deprecated use sendPowerStatusPush with notifyGridChange: true */
 async function sendGridChangeNotification(payload) {
     return sendPowerStatusPush({ ...payload, notifyGridChange: true });
@@ -148,5 +178,6 @@ async function sendGridChangeNotification(payload) {
 module.exports = {
     sendPowerStatusPush,
     sendScheduleUpdatePush,
+    sendAlertPush,
     sendGridChangeNotification,
 };
