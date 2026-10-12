@@ -92,7 +92,7 @@ async function sendPowerStatusPush({ gridPresent, chargePercent, timestamp, noti
  * Приоритет normal: high-priority data без показа UI Android может понижать; collapseKey — схлопывает очередь.
  * @param {{ group: string, date: string, hash: string }} payload
  */
-async function sendScheduleUpdatePush({ group, date, hash }) {
+async function sendScheduleUpdatePush({ group, date, hash, text = '', changes = [] }) {
     if (!initFirebase()) {
         return { sent: 0, failed: 0, skipped: true };
     }
@@ -107,6 +107,9 @@ async function sendScheduleUpdatePush({ group, date, hash }) {
             group: String(group || ''),
             date: String(date || ''),
             hash: String(hash || '').slice(0, 12),
+            // «Сегодня: было 18:00–22:00 → стало 17:00–20:30» (строки через \n) + структура (JSON); лимит FCM data — 4 КБ
+            text: String(text || '').slice(0, 1200),
+            changes: (() => { const j = JSON.stringify(changes || []); return j.length <= 2000 ? j : '[]'; })(),
             timestamp: new Date().toISOString(),
         },
         android: {
