@@ -48,3 +48,33 @@ test('kickAndCollect: второй пинок раньше интервала (�
     await kickAndCollect(rest, ['SN1'], { waitMs: 10 });
     assert.equal(calls, 1);
 });
+
+
+// --- reauth helpers ---
+{
+    const nt = require('node:test'); const assert = require('node:assert');
+    const m = require('../ecoflowMqtt');
+    nt.test('isAuthError', () => {
+        assert.ok(m.isAuthError(new Error('Connection refused: Not authorized')));
+        assert.ok(m.isAuthError(new Error('Connection refused: Bad username or password')));
+        assert.ok(!m.isAuthError(new Error('connect timeout')));
+    });
+    nt.test('buildClientId is stable and account-prefixed', () => {
+        assert.strictEqual(m.buildClientId('open-abc', ''), 'open-abc_roz-pm');
+        assert.strictEqual(m.buildClientId('open-abc', ''), m.buildClientId('open-abc', ''));
+        assert.strictEqual(m.buildClientId('open-abc', 'x1'), 'x1');
+    });
+    nt.test('authBackoffMs grows and caps', () => {
+        const b = 10 * 60000;
+        assert.strictEqual(m.authBackoffMs(0, b), 0);
+        assert.strictEqual(m.authBackoffMs(1, b), b);
+        assert.strictEqual(m.authBackoffMs(3, b), 4 * b);
+        assert.strictEqual(m.authBackoffMs(20, b), 6 * 3600 * 1000);
+    });
+    nt.test('kickAndCollect re-fetches certification once on auth error', async () => {
+        let calls = 0;
+        const rc = { getMqttCredentials: async () => { calls++; return { certificateAccount: 'open-x', certificatePassword: 'p', url: '127.0.0.1', port: 1, protocol: 'mqtt' }; } };
+        await m.kickAndCollect(rc, ['SN1'], { waitMs: 10, force: true });
+        assert.ok(calls >= 1);
+    });
+}

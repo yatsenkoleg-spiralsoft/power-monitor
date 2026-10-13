@@ -15,7 +15,6 @@
  * Переподписка «будит» поток данных (как открытие приложения), а пришедшие значения сразу
  * накладываем поверх HTTP-ответа. Никаких команд устройству не отправляется (нет publish).
  */
-const crypto = require('crypto');
 
 let mqttLib = null;
 function getMqtt() {
@@ -75,21 +74,87 @@ function maskSn(sn) {
     return s.length > 7 ? `${s.slice(0, 4)}…${s.slice(-3)}` : s;
 }
 
-async function getCredentials(restClient) {
+async function getCredentials(restClient, { force = false } = {}) {
     const now = Date.now();
-    if (credsCache.creds && now - credsCache.at < CREDS_TTL_MS) return credsCache.creds;
+    if (!force && credsCache.creds && now - credsCache.at < CREDS_TTL_MS) return credsCache.creds;
     const c = await restClient.getMqttCredentials();
     if (!c || !c.certificateAccount || !c.certificatePassword || !c.url) {
-        throw new Error('certification: неполный ответ');
+        throw new Error('certification: incomplete response');
     }
     credsCache = { creds: c, at: now };
     return c;
 }
 
+function isAuthError(err) {
+    const msg = String((err && err.message) || err || '');
+    return /not authori[sz]ed|bad user ?name or password|auth/i.test(msg) || (err && (err.code === 5 || err.code === 4 || err.code === 134 || err.code === 135));
+}
+
 /**
- * Подключиться, подписаться на quota всех станций, собрать сообщения waitMs, отключиться.
- * Никогда не бросает исключений.
- * @returns {Promise<Map<string, Record<string, any>>>} sn -> свежие ключи (может быть пустой)
+ * Stable clientId: EcoFlow expects a clientId tied to certificateAccount; a new random id on every kick
+ * (144+/day) may hit the broker's per-account client limit. Override: ECOFLOW_MQTT_CLIENT_ID.
+ */
+function buildClientId(account, override = process.env.ECOFLOW_MQTT_CLIENT_ID) {
+    if (override) return String(override);
+    return `${account}_roz-pm`;
+}
+
+/** Back-off after consecutive auth failures: 10, 20, 40 min ... up to 6 h. */
+function authBackoffMs(streak, baseMs = KICK_MIN_INTERVAL_MS) {
+    if (!streak || streak <= 0) return 0;
+    return Math.min(baseMs * 2 ** (streak - 1), 6 * 3600 * 1000);
+}
+
+let authFailStreak = 0;
+let authBlockedUntil = 0;
+
+async function connectAndCollect(mqtt, creds, sns, waitMs, result) {
+    const protocol = creds.protocol || 'mqtts';
+    const url = `${protocol}://${creds.url}:${creds.port || 8883}`;
+    const account = creds.certificateAccount;
+    const topicToSn = new Map(sns.map((sn) => [`/open/${account}/${sn}/quota`, sn]));
+    const counts = new Map(sns.map((sn) => [sn, 0]));
+    let client = null;
+    try {
+        client = mqtt.connect(url, {
+            username: account,
+            password: creds.certificatePassword,
+            clientId: buildClientId(account),
+            clean: true,
+            reconnectPeriod: 0,
+            connectTimeout: 5000,
+            keepalive: 30,
+        });
+        client.on('message', (topic, payload) => {
+            const sn = topicToSn.get(topic);
+            if (!sn) return;
+            counts.set(sn, (counts.get(sn) || 0) + 1);
+            try {
+                const flat = flattenQuotaMessage(JSON.parse(payload.toString('utf8')));
+                if (Object.keys(flat).length) result.set(sn, { ...(result.get(sn) || {}), ...flat });
+            } catch (_) { /* not JSON (protobuf etc.) - skip */ }
+        });
+        await new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('connect timeout')), 6000);
+            client.once('connect', () => { clearTimeout(t); resolve(); });
+            client.once('error', (e) => { clearTimeout(t); reject(e); });
+        });
+        await new Promise((resolve, reject) => {
+            client.subscribe([...topicToSn.keys()], { qos: 1 }, (err) => (err ? reject(err) : resolve()));
+        });
+        await new Promise((r) => setTimeout(r, waitMs));
+        console.log('EcoFlow MQTT: ' + sns.map((sn) => `${maskSn(sn)} msgs=${counts.get(sn) || 0} keys=${Object.keys(result.get(sn) || {}).length}`).join(', '));
+    } finally {
+        if (client) {
+            try { client.end(true); } catch (_) { /* ignore */ }
+        }
+    }
+}
+
+/**
+ * Short MQTT session to wake the cloud quota: connect, subscribe, collect for waitMs, disconnect.
+ * On auth failure: re-fetch certification (drop cache) and retry once; if still refused, back off.
+ * @returns {Promise<Map<string, Record<string, any>>>}
  */
 async function kickAndCollect(restClient, sns, { waitMs = DEFAULT_WAIT_MS, force = false } = {}) {
     const result = new Map();
@@ -101,58 +166,36 @@ async function kickAndCollect(restClient, sns, { waitMs = DEFAULT_WAIT_MS, force
     const now = Date.now();
     if (inFlight) return inFlight;
     if (!force && now - lastKickAt < KICK_MIN_INTERVAL_MS) return result;
+    if (!force && now < authBlockedUntil) return result;
     lastKickAt = now;
 
     inFlight = (async () => {
-        let client = null;
         try {
             const creds = await getCredentials(restClient);
-            const protocol = creds.protocol || 'mqtts';
-            const url = `${protocol}://${creds.url}:${creds.port || 8883}`;
-            const account = creds.certificateAccount;
-            const topicToSn = new Map(sns.map((sn) => [`/open/${account}/${sn}/quota`, sn]));
-            const counts = new Map(sns.map((sn) => [sn, 0]));
-
-            client = mqtt.connect(url, {
-                username: account,
-                password: creds.certificatePassword,
-                clientId: `roz-pm-${crypto.randomBytes(6).toString('hex')}`,
-                clean: true,
-                reconnectPeriod: 0,
-                connectTimeout: 5000,
-                keepalive: 30,
-            });
-
-            client.on('message', (topic, payload) => {
-                const sn = topicToSn.get(topic);
-                if (!sn) return;
-                counts.set(sn, (counts.get(sn) || 0) + 1);
-                try {
-                    const flat = flattenQuotaMessage(JSON.parse(payload.toString('utf8')));
-                    if (Object.keys(flat).length) {
-                        result.set(sn, { ...(result.get(sn) || {}), ...flat });
-                    }
-                } catch (_) { /* не JSON (protobuf у части моделей) — достаточно самого «пинка» */ }
-            });
-
-            await new Promise((resolve, reject) => {
-                const t = setTimeout(() => reject(new Error('connect timeout')), 6000);
-                client.once('connect', () => { clearTimeout(t); resolve(); });
-                client.once('error', (e) => { clearTimeout(t); reject(e); });
-            });
-            await new Promise((resolve, reject) => {
-                client.subscribe([...topicToSn.keys()], { qos: 1 }, (err) => (err ? reject(err) : resolve()));
-            });
-            await new Promise((r) => setTimeout(r, waitMs));
-
-            console.log('EcoFlow MQTT: ' + sns.map((sn) => `${maskSn(sn)} msgs=${counts.get(sn) || 0} keys=${Object.keys(result.get(sn) || {}).length}`).join(', '));
-        } catch (err) {
-            console.warn('EcoFlow MQTT kick не удался:', err && err.message);
-            if (/auth|not authorized|bad user/i.test(String(err && err.message))) credsCache = { creds: null, at: 0 };
-        } finally {
-            if (client) {
-                try { client.end(true); } catch (_) { /* ignore */ }
+            try {
+                await connectAndCollect(mqtt, creds, sns, waitMs, result);
+            } catch (err) {
+                if (!isAuthError(err)) throw err;
+                console.warn(`EcoFlow MQTT: auth refused (${err.message}), re-fetching certification and retrying once`);
+                credsCache = { creds: null, at: 0 };
+                const fresh = await getCredentials(restClient, { force: true });
+                await connectAndCollect(mqtt, fresh, sns, waitMs, result);
+                console.log('EcoFlow MQTT: reconnected with fresh certification');
             }
+            if (authFailStreak) console.log(`EcoFlow MQTT: auth OK again after ${authFailStreak} failed kicks`);
+            authFailStreak = 0;
+            authBlockedUntil = 0;
+        } catch (err) {
+            if (isAuthError(err)) {
+                credsCache = { creds: null, at: 0 };
+                authFailStreak += 1;
+                const backoff = authBackoffMs(authFailStreak);
+                authBlockedUntil = Date.now() + backoff;
+                console.warn(`EcoFlow MQTT kick failed: ${err.message} (even with fresh certification); streak=${authFailStreak}, next try in ${Math.round(backoff / 60000)} min`);
+            } else {
+                console.warn('EcoFlow MQTT kick failed:', err && err.message);
+            }
+        } finally {
             inFlight = null;
         }
         return result;
@@ -160,4 +203,4 @@ async function kickAndCollect(restClient, sns, { waitMs = DEFAULT_WAIT_MS, force
     return inFlight;
 }
 
-module.exports = { kickAndCollect, flattenQuotaMessage, maskSn };
+module.exports = { kickAndCollect, flattenQuotaMessage, maskSn, isAuthError, buildClientId, authBackoffMs };
