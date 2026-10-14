@@ -324,14 +324,16 @@ async function getDailyPowerConsumption(deviceId = null, startDate = null, endDa
             params.push(deviceId);
         }
         
-        if (startDate) {
-            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\')) >= ?';
-            params.push(startDate);
+        // Границы суток по Киеву -> UTC заранее (как в getMinuteData): условие по «голой» колонке
+        // timestamp использует индекс, а не DATE(CONVERT_TZ(...)) по всей истории таблицы.
+        if (startDate && minuteQuery.isValidDate(startDate)) {
+            query += ' AND timestamp >= ?';
+            params.push(minuteQuery.toSqlUtc(minuteQuery.kyivDayStartUtcMs(startDate)));
         }
         
-        if (endDate) {
-            query += ' AND DATE(CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\')) <= ?';
-            params.push(endDate);
+        if (endDate && minuteQuery.isValidDate(endDate)) {
+            query += ' AND timestamp < ?';
+            params.push(minuteQuery.toSqlUtc(minuteQuery.kyivDayStartUtcMs(minuteQuery.addDays(endDate, 1))));
         }
         
         query += ' GROUP BY DATE(CONVERT_TZ(timestamp, \'+00:00\', \'Europe/Kiev\')), device_id, device_name ORDER BY date DESC, device_id';
