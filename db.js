@@ -52,14 +52,14 @@ async function closePool() {
 /**
  * Записывает результат проверки устройства в базу данных
  */
-async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null, switchOn = null, powerInputW = null) {
+async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = null, powerConsumptionW = null, voltageV = null, ecoflowChargePercent = null, errorMessage = null, temperatureC = null, humidityPercent = null, switchOn = null, powerInputW = null, marstekSocPercent = null, marstekChargeW = null, marstekDischargeW = null, marstekLoadW = null, marstekPvW = null, marstekGridW = null, marstekReportTime = null) {
     const pool = getPool();
     
     try {
         const query = `
             INSERT INTO power_status 
-            (timestamp, device_id, device_name, is_online, switch_on, response_time_ms, power_consumption_w, power_input_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message)
-            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, device_id, device_name, is_online, switch_on, response_time_ms, power_consumption_w, power_input_w, voltage_v, ecoflow_charge_percent, temperature_c, humidity_percent, error_message, marstek_soc_percent, marstek_charge_w, marstek_discharge_w, marstek_load_w, marstek_pv_w, marstek_grid_w, marstek_report_time)
+            VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await pool.execute(query, [
@@ -74,7 +74,14 @@ async function savePowerStatus(deviceId, deviceName, isOnline, responseTimeMs = 
             ecoflowChargePercent,
             temperatureC,
             humidityPercent,
-            errorMessage
+            errorMessage,
+            marstekSocPercent,
+            marstekChargeW,
+            marstekDischargeW,
+            marstekLoadW,
+            marstekPvW,
+            marstekGridW,
+            marstekReportTime
         ]);
         
         return result.insertId;
@@ -555,7 +562,14 @@ async function getCurrentStatus() {
                 ps.temperature_c,
                 ps.humidity_percent,
                 ps.error_message,
-                ps.timestamp
+                ps.timestamp,
+                ps.marstek_soc_percent,
+                ps.marstek_charge_w,
+                ps.marstek_discharge_w,
+                ps.marstek_load_w,
+                ps.marstek_pv_w,
+                ps.marstek_grid_w,
+                ps.marstek_report_time
             FROM power_status ps
             INNER JOIN (
                 SELECT device_id, MAX(timestamp) AS max_ts
