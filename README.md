@@ -20,6 +20,10 @@
 - `ECOFLOW_ACCESS_KEY` - Access Key для EcoFlow API (обязательно для мониторинга EcoFlow)
 - `ECOFLOW_SECRET_KEY` - Secret Key для EcoFlow API (обязательно для мониторинга EcoFlow)
 
+**Marstek API:**
+- `MARSTEK_EMAIL` - Email для Marstek/Hame cloud (обязательно для мониторинга Marstek VENUS-E 3.0)
+- `MARSTEK_PASSWORD` - Пароль для Marstek/Hame cloud (обязательно для мониторинга Marstek VENUS-E 3.0)
+
 ### Опциональные переменные
 
 - `TUYA_API_URL` - URL Tuya API (по умолчанию: https://openapi.tuyaeu.com)
@@ -31,6 +35,9 @@
 - `ECOFLOW_DEVICE_SNS` - Список serial numbers EcoFlow устройств через запятую (например: `SN1234,SN5678`)
 - `ECOFLOW_DEVICE_SN` - Serial number одного EcoFlow устройства (для обратной совместимости, используется если `ECOFLOW_DEVICE_SNS` не установлен)
 - `ECOFLOW_HOST` - API хост EcoFlow (по умолчанию: https://api.ecoflow.com)
+
+**Marstek (опциональные):**
+- `MARSTEK_POLL_INTERVAL_MS` - Интервал опроса Marstek cloud в миллисекундах (по умолчанию: 300000 = 5 минут)
 
 ## API Endpoints
 

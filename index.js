@@ -5,6 +5,7 @@ const minuteQuery = require('./minuteQuery');
 const tuya = require('./tuya');
 const db = require('./db');
 const ecoflow = require('./ecoflow');
+const marstek = require('./marstek');
 const gridPower = require('./gridPower');
 const fcm = require('./fcm');
 const notify = require('./notify');
@@ -107,6 +108,7 @@ const DEVICE_SORT_ORDER = [
     SOCKET2_DEVICE_ID,
     HEATER_DEVICE_ID,
     'ecoflow',
+    'marstek',
     KITCHEN_LIGHT_DEVICE_ID,
     BOILER_DEVICE_ID,
     PLANT_LIGHT_DEVICE_ID,
@@ -175,6 +177,13 @@ function mapDbRowToDevice(row) {
         powerInputW: row.power_input_w != null ? Number(row.power_input_w) : null,
         temperatureC: row.temperature_c != null ? Number(row.temperature_c) : null,
         humidityPercent: row.humidity_percent != null ? Number(row.humidity_percent) : null,
+        marstekSocPercent: row.marstek_soc_percent != null ? Number(row.marstek_soc_percent) : null,
+        marstekChargeW: row.marstek_charge_w != null ? Number(row.marstek_charge_w) : null,
+        marstekDischargeW: row.marstek_discharge_w != null ? Number(row.marstek_discharge_w) : null,
+        marstekLoadW: row.marstek_load_w != null ? Number(row.marstek_load_w) : null,
+        marstekPvW: row.marstek_pv_w != null ? Number(row.marstek_pv_w) : null,
+        marstekGridW: row.marstek_grid_w != null ? Number(row.marstek_grid_w) : null,
+        marstekReportTime: row.marstek_report_time || null,
         error: row.error_message ?? null,
         recordedAt: row.timestamp,
     };
@@ -293,6 +302,63 @@ app.post('/monitor', async (req, res) => {
             }
         })();
         
+        // Получаем данные Marstek battery (опционально, только если настроено)
+        const marstekPromise = (async () => {
+            if (!marstek.isMarstekEnabled()) {
+                return;
+            }
+            try {
+                const allDevices = await marstek.getMarstekDataForAllDevices();
+                
+                for (const device of allDevices) {
+                    const { deviceId, deviceName, soc, charge, discharge, load, pv, grid, reportTime, error } = device;
+                    
+                    if (soc !== null || charge !== null || discharge !== null || load !== null || pv !== null || grid !== null) {
+                        try {
+                            await savePowerStatusTracked(
+                                deviceId,
+                                deviceName,
+                                true, // isOnline
+                                null, // responseTimeMs
+                                null, // powerConsumptionW
+                                null, // voltageV
+                                null, // ecoflowChargePercent
+                                error, // errorMessage
+                                null, // temperatureC
+                                null, // humidityPercent
+                                null, // switchOn
+                                null, // powerInputW
+                                soc, // marstekSocPercent
+                                charge, // marstekChargeW
+                                discharge, // marstekDischargeW
+                                load, // marstekLoadW
+                                pv, // marstekPvW
+                                grid, // marstekGridW
+                                reportTime // marstekReportTime
+                            );
+                            const parts = [];
+                            if (soc !== null) parts.push(`SOC ${soc.toFixed(1)}%`);
+                            if (charge !== null) parts.push(`заряд ${charge} Вт`);
+                            if (discharge !== null) parts.push(`разряд ${discharge} Вт`);
+                            if (load !== null) parts.push(`нагрузка ${load} Вт`);
+                            if (pv !== null) parts.push(`PV ${pv} Вт`);
+                            if (grid !== null) parts.push(`сеть ${grid} Вт`);
+                            if (reportTime) parts.push(`обновление ${reportTime.toISOString()}`);
+                            if (parts.length) console.log(`${deviceName}: ${parts.join(', ')}`);
+                        } catch (dbError) {
+                            console.error(`Ошибка сохранения данных ${deviceName} в БД:`, dbError.message);
+                        }
+                    } else if (error) {
+                        console.log(`${deviceName}: ошибка - ${error}`);
+                    } else {
+                        console.log(`${deviceName}: не удалось получить данные`);
+                    }
+                }
+            } catch (error) {
+                console.error('Ошибка получения данных Marstek:', error.message);
+            }
+        })();
+        
         // Проверяем каждое устройство параллельно
         const checkPromises = devices.map(async (device) => {
             try {
@@ -376,10 +442,11 @@ app.post('/monitor', async (req, res) => {
             }
         });
         
-        // Ждем завершения проверки розеток и получения заряда экофлошки
+        // Ждем завершения проверки розеток, получения заряда экофлошки и Marstek
         const [results, ecoflowCharge] = await Promise.all([
             Promise.all(checkPromises),
-            ecoflowPromise
+            ecoflowPromise,
+            marstekPromise
         ]);
         
         // Подсчитываем статистику
@@ -469,9 +536,10 @@ app.post('/monitor', async (req, res) => {
 app.get('/monitor', async (req, res) => {
     try {
         const devices = tuya.getDevices();
-        const [results, ecoflowDevices] = await Promise.all([
+        const [results, ecoflowDevices, marstekDevices] = await Promise.all([
             Promise.all(devices.map(device => tuya.checkDeviceAvailability(device.id, device.name))),
             ecoflow.getEcoFlowDataForAllDevices(),
+            marstek.getMarstekDataForAllDevices(),
         ]);
 
         const ecoflowMapped = ecoflowDevices.map(device => ({
@@ -492,9 +560,33 @@ app.get('/monitor', async (req, res) => {
             error: device.error,
         }));
 
+        const marstekMapped = marstekDevices.map(device => ({
+            deviceId: device.deviceId,
+            deviceName: device.deviceName,
+            deviceSn: device.deviceSn,
+            isOnline: device.soc !== null || device.charge !== null || device.discharge !== null,
+            responseTimeMs: null,
+            switchOn: null,
+            powerConsumptionW: null,
+            powerInputW: null,
+            voltageV: null,
+            ecoflowChargePercent: null,
+            temperatureC: null,
+            humidityPercent: null,
+            marstekSocPercent: device.soc,
+            marstekChargeW: device.charge,
+            marstekDischargeW: device.discharge,
+            marstekLoadW: device.load,
+            marstekPvW: device.pv,
+            marstekGridW: device.grid,
+            marstekReportTime: device.reportTime,
+            error: device.error,
+        }));
+
         const deviceList = sortDevices([
             ...results.map(mapTuyaResultToDevice),
             ...ecoflowMapped,
+            ...marstekMapped,
         ]);
 
         res.json({
