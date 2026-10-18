@@ -7,7 +7,10 @@
  * Правила:
  *  - старт (тревога / баллистика) — сразу при первом увидании;
  *  - конец — только после ALERT_END_POLLS (по умолчанию 2) подряд «чистых» опросов (дебаунс мигания источников);
- *  - баллистика «?» (neptun / pszsu) → «подтверждена» (kd / ain) — повторный ballistic_start с upgrade=1;
+ *  - баллистика «?» = j.ballisticQ из alert.php v59 (правило A: @kpszsu назвали Киев / область; правило B: >=3 канала NEPTUN за ~90 с
+ *    при тревоге в Киеве), источник j.ballisticQSrc; старые шумные ballisticSrc neptun/pszsu без ballisticQ игнорируются;
+ *  - «?» держится BAL_Q_HOLD_MS (по умолчанию 10 мин) после последнего срабатывания, чтобы не было ballistic_end через 2 минуты;
+ *  - баллистика «?» → «подтверждена» (kd / ain) — повторный ballistic_start с upgrade=1;
  *  - смена дроны ↔ ракеты во время тревоги — alert_drone / alert_missile с change=1;
  *  - первая запись состояния (после деплоя) — без пуша;
  *  - ошибка загрузки источника — состояние не трогаем.
@@ -17,6 +20,7 @@ const axios = require('axios');
 const SOURCE_URL = process.env.ALERT_SOURCE_URL || 'https://samber.in.ua/yasno/alert.php';
 const END_POLLS = Math.max(1, parseInt(process.env.ALERT_END_POLLS || '2', 10) || 2);
 const KEY = 'kyiv';
+const BAL_Q_HOLD_MS = Math.max(0, parseInt(process.env.BAL_Q_HOLD_MS || '600000', 10) || 0);
 
 /** alert.php JSON → { ok, alert: 'none'|'drone'|'missile', bal: 'none'|'q'|'c', balSrc } */
 function deriveState(j) {
@@ -25,8 +29,9 @@ function deriveState(j) {
     let alert = 'none';
     if (alerts.length) alert = j.uaRed ? 'missile' : 'drone';
     let bal = 'none';
-    const src = j.ballisticSrc || null;
-    if (j.ballistic && src) bal = (src === 'kd' || src === 'ain') ? 'c' : 'q';
+    let src = null;
+    if (j.ballistic === true) { bal = 'c'; src = j.ballisticSrc || 'confirmed'; }          // kd / ain
+    else if (j.ballisticQ === true) { bal = 'q'; src = j.ballisticQSrc || 'q'; }           // v59: pszsu_kyiv / neptun_burst
     if (bal !== 'none' && alert === 'none') alert = 'missile'; // баллистика без официальной тревоги — всё равно «ракетная» сторона
     return { ok: true, alert, bal, balSrc: src };
 }
@@ -35,7 +40,7 @@ function deriveState(j) {
  * Чистая функция переходов. prev: {alert, bal, alertOff, balOff} | null.
  * → { next, events: [{type, data}] }
  */
-function computeTransitions(prev, cur, endPolls = END_POLLS) {
+function computeTransitions(prev, cur, endPolls = END_POLLS, now = Date.now(), qHoldMs = BAL_Q_HOLD_MS) {
     const blank = { alert: 'none', bal: 'none', alertOff: 0, balOff: 0 };
     if (!prev) return { next: { ...blank, alert: cur.alert, bal: cur.bal }, events: [], initialized: true };
     const next = { ...blank, ...prev };
@@ -47,12 +52,15 @@ function computeTransitions(prev, cur, endPolls = END_POLLS) {
         else if (prev.bal === 'q' && cur.bal === 'c') events.push({ type: 'ballistic_start', data: { confirmed: '1', upgrade: '1', source: cur.balSrc || '' } });
         next.bal = prev.bal === 'c' ? 'c' : cur.bal;
         next.balOff = 0;
+        next.balAt = now;
     } else if (prev.bal !== 'none') {
         next.balOff = (prev.balOff || 0) + 1;
-        if (next.balOff >= endPolls) {
+        const held = prev.bal === 'q' && typeof prev.balAt === 'number' && now - prev.balAt < qHoldMs;
+        if (next.balOff >= endPolls && !held) {
             events.push({ type: 'ballistic_end', data: { confirmed: prev.bal === 'c' ? '1' : '0' } });
             next.bal = 'none';
             next.balOff = 0;
+            delete next.balAt;
         }
     }
 
