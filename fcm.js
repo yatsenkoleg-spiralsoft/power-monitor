@@ -163,11 +163,13 @@ async function sendAlertPush(payload) {
         if (v != null) data[k] = String(v);
     }
     const isEnd = /_end$/.test(data.type || '');
+    const collapseKey = data.type === 'radiation_start' ? 'radiation_start' : undefined;
     const message = {
         data,
         android: {
             priority: 'high',
             ttl: (isEnd ? 30 : 10) * 60 * 1000,   // устаревшая тревога не нужна
+            ...(collapseKey ? { collapseKey } : {}),
         },
         tokens,
     };

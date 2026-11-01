@@ -19,30 +19,38 @@ const axios = require('axios');
 
 const SOURCE_URL = process.env.ALERT_SOURCE_URL || 'https://samber.in.ua/yasno/alert.php';
 const END_POLLS = Math.max(1, parseInt(process.env.ALERT_END_POLLS || '2', 10) || 2);
+const RAD_START_POLLS = Math.max(1, parseInt(process.env.RAD_START_POLLS || '2', 10) || 2);
+const RAD_END_POLLS = Math.max(1, parseInt(process.env.RAD_END_POLLS || '3', 10) || 3);
 const KEY = 'kyiv';
 const BAL_Q_HOLD_MS = Math.max(0, parseInt(process.env.BAL_Q_HOLD_MS || '600000', 10) || 0);
 
-/** alert.php JSON → { ok, alert: 'none'|'drone'|'missile', bal: 'none'|'q'|'c', balSrc } */
+/** alert.php JSON → { ok, alert: 'none'|'drone'|'missile', bal: 'none'|'q'|'c', balSrc, rad: true|false, radSince } */
 function deriveState(j) {
     if (!j || j.ok !== true) return { ok: false };
     const alerts = Array.isArray(j.alerts) ? j.alerts : [];
     let alert = 'none';
-    if (alerts.length) alert = j.uaRed ? 'missile' : 'drone';
+    const hasAir = alerts.some((a) => a.type === 'AIR' || a.type === 'air_raid');
+    if (hasAir) alert = j.uaRed ? 'missile' : 'drone';
     let bal = 'none';
     let src = null;
-    if (j.ballistic === true) { bal = 'c'; src = j.ballisticSrc || 'confirmed'; }          // kd / ain
-    else if (j.ballisticQ === true) { bal = 'q'; src = j.ballisticQSrc || 'q'; }           // v59: pszsu_kyiv / neptun_burst
-    if (bal !== 'none' && alert === 'none') alert = 'missile'; // баллистика без официальной тревоги — всё равно «ракетная» сторона
-    return { ok: true, alert, bal, balSrc: src };
+    if (j.ballistic === true) { bal = 'c'; src = j.ballisticSrc || 'confirmed'; }
+    else if (j.ballisticQ === true) { bal = 'q'; src = j.ballisticQSrc || 'q'; }
+    if (bal !== 'none' && alert === 'none') alert = 'missile';
+    const hasNuclear = alerts.some((a) => a.type === 'NUCLEAR');
+    const ain = j.ain && Array.isArray(j.ain.kyiv) ? j.ain.kyiv : [];
+    const ainNuclear = ain.find((e) => e && e.title === 'м. Київ' && e.alertType === 'nuclear');
+    const rad = hasNuclear && !!ainNuclear;
+    const radSince = rad && ainNuclear && ainNuclear.createdAt ? ainNuclear.createdAt : null;
+    return { ok: true, alert, bal, balSrc: src, rad, radSince };
 }
 
 /**
- * Чистая функция переходов. prev: {alert, bal, alertOff, balOff} | null.
+ * Чистая функция переходов. prev: {alert, bal, alertOff, balOff, rad, radOn, radOff} | null.
  * → { next, events: [{type, data}] }
  */
-function computeTransitions(prev, cur, endPolls = END_POLLS, now = Date.now(), qHoldMs = BAL_Q_HOLD_MS) {
-    const blank = { alert: 'none', bal: 'none', alertOff: 0, balOff: 0 };
-    if (!prev) return { next: { ...blank, alert: cur.alert, bal: cur.bal }, events: [], initialized: true };
+function computeTransitions(prev, cur, endPolls = END_POLLS, now = Date.now(), qHoldMs = BAL_Q_HOLD_MS, radStartPolls = RAD_START_POLLS, radEndPolls = RAD_END_POLLS) {
+    const blank = { alert: 'none', bal: 'none', alertOff: 0, balOff: 0, rad: 'none', radOn: 0, radOff: 0 };
+    if (!prev) return { next: { ...blank, alert: cur.alert, bal: cur.bal, rad: cur.rad ? 'pending' : 'none', radOn: cur.rad ? 1 : 0 }, events: [], initialized: true };
     const next = { ...blank, ...prev };
     const events = [];
 
@@ -78,6 +86,51 @@ function computeTransitions(prev, cur, endPolls = END_POLLS, now = Date.now(), q
             next.alertOff = 0;
         }
     }
+
+    // радиационная опасность
+    if (cur.rad) {
+        if (prev.rad === 'none') {
+            next.rad = 'pending';
+            next.radOn = 1;
+            next.radOff = 0;
+        } else if (prev.rad === 'pending') {
+            next.radOn = (prev.radOn || 0) + 1;
+            next.radOff = 0;
+            if (next.radOn >= radStartPolls) {
+                events.push({ type: 'radiation_start', data: { since: cur.radSince || '' } });
+                next.rad = 'active';
+                next.radOn = 0;
+            } else {
+                next.rad = 'pending';
+            }
+        } else {
+            next.rad = 'active';
+            next.radOn = 0;
+            next.radOff = 0;
+        }
+    } else {
+        if (prev.rad === 'active') {
+            next.radOff = (prev.radOff || 0) + 1;
+            if (next.radOff >= radEndPolls) {
+                events.push({ type: 'radiation_end', data: {} });
+                next.rad = 'none';
+                next.radOff = 0;
+                next.radOn = 0;
+            } else {
+                next.rad = 'active';
+                next.radOn = 0;
+            }
+        } else if (prev.rad === 'pending') {
+            next.rad = 'none';
+            next.radOn = 0;
+            next.radOff = 0;
+        } else {
+            next.rad = 'none';
+            next.radOn = 0;
+            next.radOff = 0;
+        }
+    }
+
     return { next, events, initialized: false };
 }
 
