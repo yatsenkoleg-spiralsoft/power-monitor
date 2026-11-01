@@ -9,6 +9,7 @@ const marstek = require('./marstek');
 const gridPower = require('./gridPower');
 const fcm = require('./fcm');
 const notify = require('./notify');
+const svitlobot = require('./svitlobot');
 const schedules = require('./schedules');
 const { createMysqlScheduleRepo } = require('./scheduleRepo');
 
@@ -496,6 +497,13 @@ app.post('/monitor', async (req, res) => {
         } catch (notifyError) {
             console.error('Ошибка обработки grid state / FCM:', notifyError.message);
         }
+
+        // СвітлоБот: пинг «свет есть» / один PingOff за отключение (no-op без SVITLOBOT_CHANNEL_KEY).
+        // Ждём до ответа (Cloud Run урезает CPU после ответа); ошибки внутри не пробрасываются.
+        await svitlobot.reportToSvitlobot(
+            db.getPool(),
+            results.find((r) => r.deviceId === SOCKET2_DEVICE_ID)
+        );
 
         // Графики отключений: реально опрашиваются не чаще раза в 15 мин (SCHEDULE_REFRESH_MINUTES).
         // Ждём ДО ответа: после ответа Cloud Run урезает CPU, и фоновая работа может не выполниться.
