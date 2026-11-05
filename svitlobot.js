@@ -1,12 +1,16 @@
 /**
- * СвітлоБот (api.svitlobot.in.ua): сообщаем о наличии света по «Розетке ввод».
+ * СвітлоБот (api.svitlobot.in.ua): сообщаем о наличии света по двум розеткам (ввод + кухня).
  *
  * Правила СвітлоБота:
  *  - channelPing ~раз в минуту, СТРОГО не чаще раза в 60 с (частые запросы с IP → бан).
  *    Интервал общий для всех инстансов Cloud Run: «захват» слота атомарным UPDATE в MySQL.
  *  - channelPingOff — один раз за отключение и только после надёжного подтверждения:
- *    2 опроса подряд без света: розетка офлайн / Tuya недоступна ИЛИ напряжение < порога.
- *  - Пинг шлём только когда розетка на связи и напряжение >= порога.
+ *    2 опроса подряд без света: ОБЕ розетки 'off' (офлайн / недоступна ИЛИ напряжение < порога).
+ *  - Запросы к API ТОЛЬКО при согласованных статусах обеих розеток:
+ *    • Обе 'on' → channelPing (с дебаунсом 60 с)
+ *    • Обе 'off' → channelPingOff (после 2 опросов подряд)
+ *    • Несовпадение (включая 'unknown') → НИ ОДИН запрос, нет переходов состояния.
+ *  - Несовпадение прерывает серию off_streak (дебаунс начинается заново).
  *
  * Без SVITLOBOT_CHANNEL_KEY модуль ничего не делает. Ключ в логи не пишется.
  * Ошибки никогда не пробрасываются наружу — основной опрос не ломается.
@@ -45,6 +49,21 @@ function classifyReading(socketResult) {
     return Number(v) >= GRID_VOLTAGE_THRESHOLD ? 'on' : 'off';
 }
 
+/**
+ * Агрегированная оценка: запросы к СвітлоБот только при согласованных статусах обеих розеток.
+ * Обе 'on' → 'on'; обе 'off' → 'off'; любое несовпадение (включая 'unknown') → 'mismatch'.
+ * @param {Array<'on'|'off'|'unknown'>} readings
+ * @returns {'on'|'off'|'mismatch'}
+ */
+function aggregateReadings(readings) {
+    if (!readings || readings.length === 0) return 'mismatch';
+    if (readings.length < 2) return 'mismatch';
+    const first = readings[0];
+    if (readings.every(r => r === first && r === 'on')) return 'on';
+    if (readings.every(r => r === first && r === 'off')) return 'off';
+    return 'mismatch';
+}
+
 async function callApi(method, key, fetchImpl = fetch) {
     const url = `${API_BASE}/${method}?channel_key=${encodeURIComponent(key)}`;
     const ctrl = new AbortController();
@@ -62,14 +81,18 @@ async function callApi(method, key, fetchImpl = fetch) {
 /**
  * Вызывать после каждого опроса розеток.
  * @param {object} pool mysql2 pool
- * @param {object|undefined} socketResult результат tuya.checkDeviceAvailability для «Розетки ввод»
+ * @param {object|undefined} inputSocketResult результат tuya.checkDeviceAvailability для розетки ввод
+ * @param {object|undefined} kitchenSocketResult результат tuya.checkDeviceAvailability для розетки кухня
  */
-async function reportToSvitlobot(pool, socketResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
+async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
     if (!key || !String(key).trim()) return { skipped: 'no-key' };
     key = String(key).trim();
     try {
         await ensureTable(pool);
-        const reading = classifyReading(socketResult);
+        
+        const inputReading = classifyReading(inputSocketResult);
+        const kitchenReading = classifyReading(kitchenSocketResult);
+        const reading = aggregateReadings([inputReading, kitchenReading]);
 
         if (reading === 'on') {
             await pool.execute('UPDATE svitlobot_state SET off_streak = 0, off_sent = 0, updated_at = UTC_TIMESTAMP() WHERE id = 1');
@@ -78,10 +101,10 @@ async function reportToSvitlobot(pool, socketResult, { key = process.env.SVITLOB
                 `UPDATE svitlobot_state SET last_ping_at = UTC_TIMESTAMP()
                  WHERE id = 1 AND (last_ping_at IS NULL OR last_ping_at <= UTC_TIMESTAMP() - INTERVAL ${MIN_PING_INTERVAL_SEC} SECOND)`
             );
-            if (!claim.affectedRows) return { reading, action: 'ping-throttled' };
+            if (!claim.affectedRows) return { inputReading, kitchenReading, reading, action: 'ping-throttled' };
             const r = await callApi('channelPing', key, fetchImpl);
             if (!r.ok) console.warn(`СвітлоБот channelPing не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
-            return { reading, action: 'ping', ok: r.ok, status: r.status };
+            return { inputReading, kitchenReading, reading, action: 'ping', ok: r.ok, status: r.status };
         }
 
         if (reading === 'off') {
@@ -89,7 +112,7 @@ async function reportToSvitlobot(pool, socketResult, { key = process.env.SVITLOB
             const [claim] = await pool.execute(
                 `UPDATE svitlobot_state SET off_sent = 1 WHERE id = 1 AND off_sent = 0 AND off_streak >= ${OFF_CONFIRM_POLLS}`
             );
-            if (!claim.affectedRows) return { reading, action: 'off-wait-or-sent' };
+            if (!claim.affectedRows) return { inputReading, kitchenReading, reading, action: 'off-wait-or-sent' };
             const r = await callApi('channelPingOff', key, fetchImpl);
             if (!r.ok) {
                 // Вернём флаг — повторим на следующем опросе (если свет всё ещё нет).
@@ -98,16 +121,16 @@ async function reportToSvitlobot(pool, socketResult, { key = process.env.SVITLOB
             } else {
                 console.log('СвітлоБот: отправлен channelPingOff');
             }
-            return { reading, action: 'ping-off', ok: r.ok, status: r.status };
+            return { inputReading, kitchenReading, reading, action: 'ping-off', ok: r.ok, status: r.status };
         }
 
-        // unknown: онлайн, но без напряжения — ничего не шлём, серию «нет света» сбрасываем.
+        // mismatch: несовпадение статусов — ничего не шлём, серию «нет света» прерываем.
         await pool.execute('UPDATE svitlobot_state SET off_streak = 0, updated_at = UTC_TIMESTAMP() WHERE id = 1');
-        return { reading, action: 'none' };
+        return { inputReading, kitchenReading, reading, action: 'mismatch' };
     } catch (e) {
         console.error('СвітлоБот: ошибка обработки:', e.message);
         return { error: e.message };
     }
 }
 
-module.exports = { reportToSvitlobot, classifyReading, callApi, MIN_PING_INTERVAL_SEC };
+module.exports = { reportToSvitlobot, classifyReading, aggregateReadings, callApi, MIN_PING_INTERVAL_SEC };
