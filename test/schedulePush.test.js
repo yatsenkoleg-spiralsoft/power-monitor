@@ -37,7 +37,7 @@ test('сервис: первый раз — только запоминает; �
         scheduleService: { query: async () => ({ days }) },
         stateRepo: SP.createMemoryPushStateRepo(clock),
         sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
-        group: '49.1', debounceMinutes: 5, now: clock, log: { log() {} },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
     });
     assert.equal((await svc.check()).reason, 'initialized');
     assert.equal((await svc.check()).reason, 'unchanged');
@@ -46,7 +46,7 @@ test('сервис: первый раз — только запоминает; �
     assert.equal(r.pushed, true);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].date, '2026-10-10');
-    assert.equal(sent[0].group, '49.1');
+    assert.equal(sent[0].group, '58.1');
     days = { '2026-10-10': day({ status: 'EmergencyShutdowns', slots: [] }) };
     t = new Date('2026-10-10T12:02:00Z');
     assert.equal((await svc.check()).reason, 'debounced');

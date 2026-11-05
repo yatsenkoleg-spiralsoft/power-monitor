@@ -724,7 +724,7 @@ app.post('/api/control', async (req, res) => {
  * GET /api/current — последний снимок из БД (быстрый, ~1 мин свежести)
  */
 /**
- * GET /api/schedules?group=49.1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD[&source=yasno|dtek][&versions=1]
+ * GET /api/schedules?group=58.1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD[&source=yasno|dtek][&versions=1]
  * История графиков отключений: по каждому дню актуальная версия от каждого источника (+ все версии при versions=1).
  */
 schedules.registerScheduleRoutes(app, scheduleService);
@@ -1120,7 +1120,7 @@ app.get('/', (req, res) => {
             powerDetails: 'GET /api/power-details - Детальные данные о потреблении за день',
             hourly: 'GET /api/hourly - Почасовые данные за период',
             minute: 'GET /api/minute - Поминутные данные за период',
-            schedules: 'GET /api/schedules?group=49.1&startDate&endDate - История графиков отключений (YASNO/ДТЭК)',
+            schedules: 'GET /api/schedules?group=58.1&startDate&endDate - История графиков отключений (YASNO/ДТЭК)',
             health: 'GET /health - Проверка состояния сервиса'
         }
     });

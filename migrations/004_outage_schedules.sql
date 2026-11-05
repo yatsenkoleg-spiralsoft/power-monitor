@@ -8,7 +8,7 @@
 CREATE TABLE IF NOT EXISTS outage_schedules (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     schedule_date DATE NOT NULL COMMENT 'дата графика (Киев)',
-    group_code VARCHAR(16) NOT NULL COMMENT 'очередь, напр. 49.1',
+    group_code VARCHAR(16) NOT NULL COMMENT 'очередь, напр. 58.1',
     source VARCHAR(16) NOT NULL COMMENT 'yasno | dtek',
     status VARCHAR(48) NULL COMMENT 'ScheduleApplies / WaitingForSchedule / EmergencyShutdowns ...',
     slots JSON NOT NULL COMMENT '[{"start":0,"end":90,"type":"off|maybe"}] — минуты от 00:00 по Киеву',
