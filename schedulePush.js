@@ -166,6 +166,11 @@ function createSchedulePushService({
                 log.error && log.error('schedule diff:', e.message);
             }
         }
+        const hasContent = change.text.trim().length > 0 || (change.days && change.days.length > 0);
+        if (!hasContent) {
+            log.log && log.log(`FCM: schedule_update group=${group} hash=${hash.slice(0, 12)} skipped=empty_diff (no contentful changes)`);
+            return { pushed: false, reason: 'empty_diff', hash: hash.slice(0, 12), text: '' };
+        }
         const r = await sendPush({ group, date: today, hash, text: change.text, changes: change.days });
         log.log && log.log(`FCM: schedule_update group=${group} hash=${hash.slice(0, 12)} sent=${r && r.sent} failed=${r && r.failed}`);
         return { pushed: true, hash: hash.slice(0, 12), text: change.text, sent: r && r.sent, failed: r && r.failed };
