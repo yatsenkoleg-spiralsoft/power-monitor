@@ -54,3 +54,53 @@ test('сервис: первый раз — только запоминает; �
     assert.equal((await svc.check()).pushed, true);
     assert.equal(sent.length, 2);
 });
+
+test('сервис: хеш изменился, но нет содержательных изменений — пуш не отправляется', async () => {
+    let t = new Date('2026-10-10T12:00:00Z');
+    const clock = () => t;
+    let days = { '2026-10-10': day({ status: 'ScheduleApplies', slots: [off(480, 600)] }) };
+    const sent = [];
+    const repo = SP.createMemoryPushStateRepo(clock);
+    const svc = SP.createSchedulePushService({
+        scheduleService: { query: async () => ({ days }) },
+        stateRepo: repo,
+        sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
+    });
+    assert.equal((await svc.check()).reason, 'initialized');
+    days = { '2026-10-10': day({ status: 'ScheduleApplies', slots: [off(480, 600)] }), '2026-10-11': day({ status: 'WaitingForSchedule', slots: [] }) };
+    t = new Date('2026-10-10T12:06:00Z');
+    const r = await svc.check();
+    assert.equal(r.pushed, false);
+    assert.equal(r.reason, 'empty_diff');
+    assert.equal(sent.length, 0);
+});
+
+test('сервис: отсутствует snapshot, хеш изменился — пуш не отправляется, snapshot сохраняется', async () => {
+    let t = new Date('2026-10-10T12:00:00Z');
+    const clock = () => t;
+    let days = { '2026-10-10': day({ status: 'ScheduleApplies', slots: [off(480, 600)] }) };
+    const sent = [];
+    const repo = SP.createMemoryPushStateRepo(clock);
+    const svc = SP.createSchedulePushService({
+        scheduleService: { query: async () => ({ days }) },
+        stateRepo: repo,
+        sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
+    });
+    assert.equal((await svc.check()).reason, 'initialized');
+    delete repo.snaps['schedule:58.1'];
+    days = { '2026-10-10': day({ status: 'ScheduleApplies', slots: [off(480, 600), off(1080, 1290)] }) };
+    t = new Date('2026-10-10T12:06:00Z');
+    const r = await svc.check();
+    assert.equal(r.pushed, false);
+    assert.equal(r.reason, 'empty_diff');
+    assert.equal(sent.length, 0);
+    assert.ok(repo.snaps['schedule:58.1']);
+    days = { '2026-10-10': day({ status: 'ScheduleApplies', slots: [off(480, 600)] }) };
+    t = new Date('2026-10-10T12:12:00Z');
+    const r2 = await svc.check();
+    assert.equal(r2.pushed, true);
+    assert.equal(sent.length, 1);
+    assert.ok(sent[0].text.includes('отменено'));
+});
