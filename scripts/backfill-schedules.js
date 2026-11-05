@@ -79,7 +79,7 @@ async function main() {
             if (res.items.length) {
                 const st = await service.store(res.items, { origin: 'backfill', seenAt: res.commitDate });
                 ok++; versions += st.inserted;
-                const g = res.items.find((x) => x.group === '49.1') || res.items[0];
+                const g = res.items.find((x) => x.group === '58.1') || res.items[0];
                 console.log(`${day}  @${res.sha.slice(0, 7)} ${res.commitDate.toISOString()}  очередей: ${res.items.length}  ${g.group}: откл. ${g.slots.filter((s) => s.type === 'off').map((s) => `${s.start / 60}–${s.end / 60}`).join(', ') || 'нет'}`);
             } else console.log(`${day}  — ${res.note}`);
         } catch (e) {

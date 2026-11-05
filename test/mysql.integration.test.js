@@ -24,7 +24,7 @@ test('MySQL: миграция, дедупликация, слот опроса, 
         const repo = createMysqlScheduleRepo(() => pool);
         let yasno = fx('yasno.json');
         const fetchImpl = async (url) => res(url.includes('yasno') ? yasno : fx('dtek.json'));
-        const mk = () => S.createScheduleService({ repo, fetchImpl, groups: '49.1', log: { error() {} }, sources: { yasno: 'https://yasno.test', dtek: 'https://dtek.test' } });
+        const mk = () => S.createScheduleService({ repo, fetchImpl, groups: '58.1', log: { error() {} }, sources: { yasno: 'https://yasno.test', dtek: 'https://dtek.test' } });
 
         const a = mk();
         const r1 = await a.maybeRefresh();
@@ -43,7 +43,7 @@ test('MySQL: миграция, дедупликация, слот опроса, 
 
         // завтра опубликовали → новая версия; потом откатили → строк не прибавилось, актуальна первая
         yasno = JSON.parse(JSON.stringify(fx('yasno.json')));
-        yasno['49.1'].tomorrow = { slots: [{ start: 600, end: 840, type: 'Definite' }], date: '2026-10-10T00:00:00+03:00', status: 'ScheduleApplies' };
+        yasno['58.1'].tomorrow = { slots: [{ start: 600, end: 840, type: 'Definite' }], date: '2026-10-10T00:00:00+03:00', status: 'ScheduleApplies' };
         await new Promise((r) => setTimeout(r, 1100));
         assert.equal((await mk().maybeRefresh({ force: true })).yasno.inserted, 1);
         yasno = fx('yasno.json');
@@ -52,7 +52,7 @@ test('MySQL: миграция, дедупликация, слот опроса, 
         const [[{ n: n3 }]] = await pool.query('SELECT COUNT(*) n FROM outage_schedules');
         assert.equal(n3, 4);
 
-        const q = await a.query({ group: '49.1', startDate: '2026-10-09', endDate: '2026-10-10', versions: true });
+        const q = await a.query({ group: '58.1', startDate: '2026-10-09', endDate: '2026-10-10', versions: true });
         assert.equal(q.days['2026-10-10'].yasno.status, 'WaitingForSchedule');
         assert.equal(q.days['2026-10-10'].yasno.versions.length, 2);
         assert.deepEqual(q.days['2026-10-09'].dtek.slots, [{ start: 0, end: 90, type: 'off' }, { start: 1080, end: 1290, type: 'off' }]);

@@ -134,7 +134,7 @@ function createSchedulePushService({
     scheduleService,
     stateRepo,
     sendPush,                                   // async ({ group, date, hash }) => { sent, failed, skipped }
-    group = process.env.SCHEDULE_PUSH_GROUP || process.env.SCHEDULE_DEFAULT_GROUP || '49.1',
+    group = process.env.SCHEDULE_PUSH_GROUP || process.env.SCHEDULE_DEFAULT_GROUP || '58.1',
     debounceMinutes = parseInt(process.env.SCHEDULE_PUSH_DEBOUNCE_MINUTES || '5', 10),
     now = () => new Date(),
     log = console,

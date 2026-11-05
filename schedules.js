@@ -2,9 +2,9 @@
  * История графиков отключений (YASNO + зеркало ДТЭК outage-data-ua).
  *
  * - parseYasno / parseDtek — приводят ответы источников к единому виду:
- *     { date: 'YYYY-MM-DD', group: '49.1', source: 'yasno'|'dtek', status, slots: [{start,end,type:'off'|'maybe'}], sourceUpdatedAt }
+ *     { date: 'YYYY-MM-DD', group: '58.1', source: 'yasno'|'dtek', status, slots: [{start,end,type:'off'|'maybe'}], sourceUpdatedAt }
  *   start/end — минуты от начала суток по Киеву (0..1440), соседние интервалы одного типа склеены.
- * - createScheduleService({ repo, fetchImpl, now, ... }) — опрос источников не чаще раза в N минут,
+ * - createScheduleService({ repo, fetchImpl, now, ... }) — опрос источників не чаще раза в N минут,
  *   запись только изменившихся графиков (дедупликация по хэшу содержимого), выдача для GET /api/schedules.
  *
  * Хранилище (repo) — см. scheduleRepo.js (MySQL) и test/memoryRepo.js (для тестов).
@@ -209,7 +209,7 @@ function createScheduleService({
 
     /** Данные для GET /api/schedules */
     async function query({ group, startDate, endDate, source = null, versions = false }) {
-        if (!group || !/^\d+(\.\d+)?$/.test(group)) throw Object.assign(new Error('Параметр group обязателен, напр. 49.1'), { status: 400 });
+        if (!group || !/^\d+(\.\d+)?$/.test(group)) throw Object.assign(new Error('Параметр group обязателен, напр. 58.1'), { status: 400 });
         const today = kyivDateKey(now());
         startDate = startDate || addDays(today, -6);
         endDate = endDate || addDays(today, 1);
@@ -243,7 +243,7 @@ function registerScheduleRoutes(app, service) {
     app.get('/api/schedules', async (req, res) => {
         try {
             const data = await service.query({
-                group: String(req.query.group || process.env.SCHEDULE_DEFAULT_GROUP || '49.1'),
+                group: String(req.query.group || process.env.SCHEDULE_DEFAULT_GROUP || '58.1'),
                 startDate: req.query.startDate,
                 endDate: req.query.endDate,
                 source: req.query.source === 'yasno' || req.query.source === 'dtek' ? req.query.source : null,
