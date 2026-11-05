@@ -501,12 +501,17 @@ app.post('/monitor', async (req, res) => {
         // СвітлоБот: пинг «свет есть» / один PingOff за отключение (no-op без SVITLOBOT_CHANNEL_KEY).
         // Ждём до ответа (Cloud Run урезает CPU после ответа); ошибки внутри не пробрасываются.
         // Проверяем обе розетки: ввод (SOCKET1/Обогреватель) и кухня (SOCKET2).
+        // Свидетели интернет-связи: свет на кухне (и свет в коридоре, если есть).
         const inputSocket = results.find((r) => r.deviceId === SOCKET1_DEVICE_ID || r.deviceId === HEATER_DEVICE_ID);
         const kitchenSocket = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
+        const kitchenLight = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
+        const corridorLight = undefined; // TODO: corridor light device ID not found in codebase
         await svitlobot.reportToSvitlobot(
             db.getPool(),
             inputSocket,
-            kitchenSocket
+            kitchenSocket,
+            kitchenLight,
+            corridorLight
         );
 
         // Графики отключений: реально опрашиваются не чаще раза в 15 мин (SCHEDULE_REFRESH_MINUTES).

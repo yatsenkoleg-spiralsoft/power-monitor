@@ -6,10 +6,15 @@
  *    Интервал общий для всех инстансов Cloud Run: «захват» слота атомарным UPDATE в MySQL.
  *  - channelPingOff — один раз за отключение, при первом же опросе с «обе офлайн».
  *  - Логика определения света ПО СВЯЗИ С УСТРОЙСТВАМИ (не по напряжению/мощности):
- *    • Хотя бы ОДНО устройство онлайн (isOnline=true) → свет есть → channelPing
+ *    • Хотя бы ОДНА розетка онлайн (isOnline=true) → свет есть → channelPing
  *      (даже если реле выключено или выход 0В/0Вт — важна связь с устройством)
- *    • ОБЕ устройства явно офлайн (isOnline=false) → света нет → channelPingOff сразу
+ *    • ОБЕ розетки офлайн (isOnline=false) И хотя бы ОДНО реле-свидетель онлайн → 
+ *      света нет → channelPingOff сразу (свидетель доказывает, что интернет работает)
+ *    • ОБЕ розетки офлайн БЕЗ онлайн-свидетеля → неопределённость (возможна перезагрузка роутера),
+ *      НЕ шлём PingOff
  *    • Unknown/ошибки API/неполные данные НЕ синтезируют "обе офлайн"
+ *  - Реле-свидетели интернет-связи (kitchen light / corridor light): их онлайн-статус
+ *    (не switch on/off) доказывает работу интернета при «обе розетки офлайн».
  *
  * Без SVITLOBOT_CHANNEL_KEY модуль ничего не делает. Ключ в логи не пишется.
  * Ошибки никогда не пробрасываются наружу — основной опрос не ломается.
@@ -38,19 +43,29 @@ async function ensureTable(pool) {
  * Агрегированная оценка ПО СВЯЗИ С УСТРОЙСТВАМИ (не по напряжению/мощности).
  * @param {object|undefined} inputSocketResult результат checkDeviceAvailability для розетки ввод
  * @param {object|undefined} kitchenSocketResult результат checkDeviceAvailability для розетки кухня
+ * @param {object|undefined} kitchenLightResult результат для света на кухне (witness)
+ * @param {object|undefined} corridorLightResult результат для света в коридоре (witness)
  * @returns {'on'|'off'|'unknown'}
  */
-function aggregateReadings(inputSocketResult, kitchenSocketResult) {
+function aggregateReadings(inputSocketResult, kitchenSocketResult, kitchenLightResult, corridorLightResult) {
     const inputOnline = inputSocketResult && inputSocketResult.isOnline === true;
     const kitchenOnline = kitchenSocketResult && kitchenSocketResult.isOnline === true;
     
-    // Хотя бы ОДНО устройство онлайн → свет есть (даже если реле выключено или 0В/0Вт)
+    // Хотя бы ОДНА розетка онлайн → свет есть (даже если реле выключено или 0В/0Вт)
     if (inputOnline || kitchenOnline) return 'on';
     
-    // ОБЕ устройства ЯВНО офлайн (isOnline=false) → света нет
+    // ОБЕ розетки ЯВНО офлайн (isOnline=false)
     const inputOffline = inputSocketResult && inputSocketResult.isOnline === false;
     const kitchenOffline = kitchenSocketResult && kitchenSocketResult.isOnline === false;
-    if (inputOffline && kitchenOffline) return 'off';
+    if (inputOffline && kitchenOffline) {
+        // Проверяем свидетелей: хотя бы одно реле онлайн → интернет работает, света действительно нет
+        const kitchenLightOnline = kitchenLightResult && kitchenLightResult.isOnline === true;
+        const corridorLightOnline = corridorLightResult && corridorLightResult.isOnline === true;
+        if (kitchenLightOnline || corridorLightOnline) return 'off';
+        
+        // ОБЕ розетки офлайн, НО нет онлайн-свидетеля → неопределённость (возможна перезагрузка роутера)
+        return 'unknown';
+    }
     
     // Всё остальное (undefined, null, ошибки API, неполные данные) → unknown
     return 'unknown';
@@ -75,16 +90,20 @@ async function callApi(method, key, fetchImpl = fetch) {
  * @param {object} pool mysql2 pool
  * @param {object|undefined} inputSocketResult результат tuya.checkDeviceAvailability для розетки ввод
  * @param {object|undefined} kitchenSocketResult результат tuya.checkDeviceAvailability для розетки кухня
+ * @param {object|undefined} kitchenLightResult результат для света на кухне (witness)
+ * @param {object|undefined} corridorLightResult результат для света в коридоре (witness)
  */
-async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
+async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, kitchenLightResult, corridorLightResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
     if (!key || !String(key).trim()) return { skipped: 'no-key' };
     key = String(key).trim();
     try {
         await ensureTable(pool);
         
-        const reading = aggregateReadings(inputSocketResult, kitchenSocketResult);
+        const reading = aggregateReadings(inputSocketResult, kitchenSocketResult, kitchenLightResult, corridorLightResult);
         const inputOnline = inputSocketResult && inputSocketResult.isOnline === true;
         const kitchenOnline = kitchenSocketResult && kitchenSocketResult.isOnline === true;
+        const witnessOnline = (kitchenLightResult && kitchenLightResult.isOnline === true) || 
+                              (corridorLightResult && corridorLightResult.isOnline === true);
 
         if (reading === 'on') {
             await pool.execute('UPDATE svitlobot_state SET off_sent = 0, updated_at = UTC_TIMESTAMP() WHERE id = 1');
@@ -93,18 +112,18 @@ async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, {
                 `UPDATE svitlobot_state SET last_ping_at = UTC_TIMESTAMP()
                  WHERE id = 1 AND (last_ping_at IS NULL OR last_ping_at <= UTC_TIMESTAMP() - INTERVAL ${MIN_PING_INTERVAL_SEC} SECOND)`
             );
-            if (!claim.affectedRows) return { inputOnline, kitchenOnline, reading, action: 'ping-throttled' };
+            if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-throttled' };
             const r = await callApi('channelPing', key, fetchImpl);
             if (!r.ok) console.warn(`СвітлоБот channelPing не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
-            return { inputOnline, kitchenOnline, reading, action: 'ping', ok: r.ok, status: r.status };
+            return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping', ok: r.ok, status: r.status };
         }
 
         if (reading === 'off') {
-            // ОБЕ офлайн — сразу отправляем PingOff (если ещё не отправлен за это отключение)
+            // ОБЕ розетки офлайн И есть онлайн-свидетель → отправляем PingOff (если ещё не отправлен)
             const [claim] = await pool.execute(
                 'UPDATE svitlobot_state SET off_sent = 1, updated_at = UTC_TIMESTAMP() WHERE id = 1 AND off_sent = 0'
             );
-            if (!claim.affectedRows) return { inputOnline, kitchenOnline, reading, action: 'off-already-sent' };
+            if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'off-already-sent' };
             const r = await callApi('channelPingOff', key, fetchImpl);
             if (!r.ok) {
                 // Вернём флаг — повторим на следующем опросе (если свет всё ещё нет).
@@ -113,11 +132,11 @@ async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, {
             } else {
                 console.log('СвітлоБот: отправлен channelPingOff');
             }
-            return { inputOnline, kitchenOnline, reading, action: 'ping-off', ok: r.ok, status: r.status };
+            return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-off', ok: r.ok, status: r.status };
         }
 
-        // unknown: ошибки API, неполные данные — ничего не шлём, флаг off_sent не меняем
-        return { inputOnline, kitchenOnline, reading, action: 'none' };
+        // unknown: ошибки API, неполные данные, или обе розетки офлайн без свидетеля — ничего не шлём
+        return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'none' };
     } catch (e) {
         console.error('СвітлоБот: ошибка обработки:', e.message);
         return { error: e.message };
