@@ -7,6 +7,7 @@ const iv = (s) => `${fmt(s[0])}–${fmt(s[1])}${s[2] === 'maybe' ? ' (возмо
 const overlaps = (a, b) => a[2] === b[2] && a[0] < b[1] && b[0] < a[1];
 const same = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 const isWaiting = (st) => /Waiting|NoSchedule/i.test(st || '');
+const isPublished = (st) => /ScheduleApplies/i.test(st || '');
 
 /** Изменения интервалов одного дня → [{kind:'changed'|'added'|'removed', from?, to?}] */
 function diffSlots(prev, next) {
@@ -44,13 +45,15 @@ function describeScheduleChange(prevEff, nextEff, labels = {}) {
     for (const d of nextEff || []) {
         const label = labels[d.date] || d.date;
         const p = prevBy[d.date];
-        const hadGraph = p && (p.slots.length || (p.status && !isWaiting(p.status)));
-        const hasGraph = d.slots.length || (d.status && !isWaiting(d.status));
+        const hadGraph = p && (p.slots.length || isPublished(p.status));
+        const hasGraph = d.slots.length || isPublished(d.status);
         const day = { date: d.date, label, changes: [] };
         const parts = [];
-        if (p && !!p.emergency !== !!d.emergency) {
-            day.emergency = !!d.emergency;
-            parts.push(d.emergency ? 'аварийные отключения' : 'аварийные отключения отменены');
+        const prevEmergency = p ? !!p.emergency : false;
+        const nextEmergency = !!d.emergency;
+        if (prevEmergency !== nextEmergency) {
+            day.emergency = nextEmergency;
+            parts.push(nextEmergency ? 'аварийные отключения' : 'аварийные отключения отменены');
         }
         if (!hadGraph && hasGraph) {
             day.appeared = true;
@@ -66,7 +69,11 @@ function describeScheduleChange(prevEff, nextEff, labels = {}) {
             }
             if (!d.slots.length && p.slots.length) parts.push('отключений нет');
         }
-        if (parts.length) {
+        // Пропускаем день если единственное изменение — аварийный режим без опубликованного графика.
+        // Такое бывает когда завтра переходит из WaitingForSchedule в EmergencyShutdowns, но слотов еще нет.
+        const onlyEmergencyChange = parts.length === 1 && parts[0].includes('аварийные отключения');
+        const shouldSkip = onlyEmergencyChange && !hadGraph && !hasGraph;
+        if (parts.length && !shouldSkip) {
             lines.push(`${label}: ${parts.join('; ')}`);
             day.changes = day.changes.map((c) => ({ kind: c.kind, from: (c.from || []).map(iv), to: (c.to || []).map(iv) }));
             days.push(day);
