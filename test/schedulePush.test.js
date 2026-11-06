@@ -104,3 +104,92 @@ test('сервис: отсутствует snapshot, хеш изменился �
     assert.equal(sent.length, 1);
     assert.ok(sent[0].text.includes('отменено'));
 });
+
+test('сервис: переход в аварийный режим без слотов на завтра не должен говорить о появлении графика', async () => {
+    let t = new Date('2026-11-06T09:00:00Z');
+    const clock = () => t;
+    let days = {
+        '2026-11-06': day({ status: 'ScheduleApplies', slots: [off(630, 1020), off(1230, 1440)] }),
+        '2026-11-07': day({ status: 'WaitingForSchedule', slots: [] }),
+    };
+    const sent = [];
+    const repo = SP.createMemoryPushStateRepo(clock);
+    const svc = SP.createSchedulePushService({
+        scheduleService: { query: async () => ({ days }) },
+        stateRepo: repo,
+        sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
+    });
+    assert.equal((await svc.check()).reason, 'initialized');
+    days = {
+        '2026-11-06': day({ status: 'EmergencyShutdowns', slots: [off(630, 1080), off(1200, 1440)] }),
+        '2026-11-07': day({ status: 'EmergencyShutdowns', slots: [] }),
+    };
+    t = new Date('2026-11-06T09:06:00Z');
+    const r = await svc.check();
+    assert.equal(r.pushed, true, 'Should push for today changes');
+    assert.equal(sent.length, 1);
+    assert.ok(sent[0].text.includes('Сегодня'), 'Should have today changes');
+    assert.ok(sent[0].text.includes('аварийные отключения'), 'Should mention emergency');
+    assert.ok(!sent[0].text.includes('Завтра'), 'Should NOT include tomorrow with unpublished schedule');
+    assert.ok(!sent[0].text.includes('появился график'), 'Should NOT claim schedule appeared for unpublished tomorrow');
+});
+
+test('сервис: реальное изменение сегодня + переход завтра в EmergencyShutdowns без графика — только сегодня в пуше', async () => {
+    let t = new Date('2026-11-06T09:00:00Z');
+    const clock = () => t;
+    let days = {
+        '2026-11-06': day({ status: 'ScheduleApplies', slots: [off(630, 1020), off(1230, 1440)] }),
+        '2026-11-07': day({ status: 'WaitingForSchedule', slots: [] }),
+    };
+    const sent = [];
+    const repo = SP.createMemoryPushStateRepo(clock);
+    const svc = SP.createSchedulePushService({
+        scheduleService: { query: async () => ({ days }) },
+        stateRepo: repo,
+        sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
+    });
+    assert.equal((await svc.check()).reason, 'initialized');
+    days = {
+        '2026-11-06': day({ status: 'EmergencyShutdowns', slots: [off(630, 1080), off(1200, 1440)] }),
+        '2026-11-07': day({ status: 'EmergencyShutdowns', slots: [] }),
+    };
+    t = new Date('2026-11-06T09:06:00Z');
+    const r = await svc.check();
+    assert.equal(r.pushed, true);
+    assert.equal(sent.length, 1);
+    const lines = sent[0].text.split('\n');
+    assert.equal(lines.filter((l) => l.startsWith('Сегодня')).length, 1, 'Should have exactly one today line');
+    assert.equal(lines.filter((l) => l.startsWith('Завтра')).length, 0, 'Should have NO tomorrow line');
+});
+
+test('сервис: опубликованный график завтра с EmergencyShutdowns и слотами — должен упоминаться', async () => {
+    let t = new Date('2026-11-06T09:00:00Z');
+    const clock = () => t;
+    let days = {
+        '2026-11-06': day({ status: 'ScheduleApplies', slots: [off(630, 1020)] }),
+        '2026-11-07': day({ status: 'WaitingForSchedule', slots: [] }),
+    };
+    const sent = [];
+    const repo = SP.createMemoryPushStateRepo(clock);
+    const svc = SP.createSchedulePushService({
+        scheduleService: { query: async () => ({ days }) },
+        stateRepo: repo,
+        sendPush: async (p) => { sent.push(p); return { sent: 1, failed: 0 }; },
+        group: '58.1', debounceMinutes: 5, now: clock, log: { log() {} },
+    });
+    assert.equal((await svc.check()).reason, 'initialized');
+    days = {
+        '2026-11-06': day({ status: 'ScheduleApplies', slots: [off(630, 1020)] }),
+        '2026-11-07': day({ status: 'EmergencyShutdowns', slots: [off(600, 900)] }),
+    };
+    t = new Date('2026-11-06T09:06:00Z');
+    const r = await svc.check();
+    assert.equal(r.pushed, true);
+    assert.equal(sent.length, 1);
+    assert.ok(sent[0].text.includes('Завтра'), 'Should mention tomorrow when it has published slots');
+    assert.ok(sent[0].text.includes('аварийные отключения'), 'Should mention emergency');
+    assert.ok(sent[0].text.includes('появился график'), 'Should claim schedule appeared with actual slots');
+    assert.ok(sent[0].text.includes('10:00'), 'Should show slot times');
+});
