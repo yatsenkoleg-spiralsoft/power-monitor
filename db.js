@@ -516,7 +516,8 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 CASE WHEN (device_id = 'ecoflow' OR device_id LIKE 'ecoflow%') THEN ecoflow_charge_percent ELSE NULL END as ecoflow_charge_percent,
                 temperature_c,
                 humidity_percent,
-                marstek_soc_percent
+                marstek_soc_percent,
+                marstek_charge_w
             FROM power_status
             WHERE 1=1
         `;

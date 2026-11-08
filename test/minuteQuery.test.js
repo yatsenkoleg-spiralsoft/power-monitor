@@ -41,6 +41,12 @@ test('fields projection', () => {
     assert.strictEqual(q.projectRows(rows, null), rows);
 });
 
+test('marstek_charge_w field parsing and projection', () => {
+    assert.deepStrictEqual(q.parseFields('marstek_charge_w,marstek_soc_percent'), ['minute', 'marstek_charge_w', 'marstek_soc_percent']);
+    const rows = [{ minute: '2026-11-08 10:00', marstek_charge_w: '250', marstek_soc_percent: '85', device_id: 'marstek' }];
+    assert.deepStrictEqual(q.projectRows(rows, ['minute', 'marstek_charge_w']), [{ minute: '2026-11-08 10:00', marstek_charge_w: '250' }]);
+});
+
 function serve(handler) {
     return new Promise((resolve) => {
         const srv = http.createServer((req, res) => {
