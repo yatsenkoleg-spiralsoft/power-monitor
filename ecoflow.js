@@ -143,7 +143,12 @@ async function fetchEcoFlowStatus(deviceSn, forceRefresh = false) {
 /**
  * Извлекает напряжение в сети (В) и потребление на выходах 220 В (Вт) из deviceState.
  * Напряжение: inv.acInVol в мВ → делим на 1000.
- * Потребление (выдача): inv.outputWatts или pd.wattsOutSum (Вт).
+ * Потребление (выдача): пробуем несколько вариантов полей для разных моделей EcoFlow:
+ *   - inv.outputWatts (основное поле для большинства моделей)
+ *   - pd.wattsOutSum (альтернативное имя)
+ *   - inv.invOutputWatts (некоторые модели)
+ *   - inv.outWatts (сокращённый вариант)
+ *   - pd.invUsedWatts (мощность используемая инвертором)
  * Зарядка (вход): pd.wattsInSum (Вт) — суммарная мощность на входе.
  * @param {Record<string, any>} deviceState
  * @returns {{ voltageV: number|null, outputW: number|null, inputW: number|null }}
@@ -159,7 +164,12 @@ function getPowerFromState(deviceState) {
         if (!isNaN(v)) voltageV = v;
     }
     let outputW = null;
-    const outW = deviceState['inv.outputWatts'] ?? deviceState['pd.wattsOutSum'];
+    // Try multiple field names for output power (different EcoFlow models use different names)
+    const outW = deviceState['inv.outputWatts'] 
+        ?? deviceState['pd.wattsOutSum'] 
+        ?? deviceState['inv.invOutputWatts']
+        ?? deviceState['inv.outWatts']
+        ?? deviceState['pd.invUsedWatts'];
     if (outW !== undefined && outW !== null) {
         const w = Number(outW);
         if (!isNaN(w)) outputW = w;
