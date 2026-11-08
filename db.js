@@ -517,7 +517,11 @@ async function getMinuteData(deviceId = null, startDate = null, endDate = null) 
                 temperature_c,
                 humidity_percent,
                 marstek_soc_percent,
-                marstek_charge_w
+                marstek_charge_w,
+                marstek_discharge_w,
+                marstek_load_w,
+                marstek_grid_w,
+                marstek_report_time
             FROM power_status
             WHERE 1=1
         `;

@@ -16,7 +16,8 @@ const MINUTE_FIELDS = new Set([
     'minute', 'date', 'time', 'timestamp', 'device_id', 'device_name', 'is_online',
     'availability_percent', 'avg_power_w', 'total_consumption_kwh', 'voltage_v',
     'ecoflow_charge_percent', 'temperature_c', 'humidity_percent',
-    'marstek_soc_percent', 'marstek_charge_w',
+    'marstek_soc_percent', 'marstek_charge_w', 'marstek_discharge_w', 'marstek_load_w',
+    'marstek_grid_w', 'marstek_report_time',
 ]);
 
 const offsetFormatter = new Intl.DateTimeFormat('en-US', {

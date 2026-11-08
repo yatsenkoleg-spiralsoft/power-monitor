@@ -47,6 +47,42 @@ test('marstek_charge_w field parsing and projection', () => {
     assert.deepStrictEqual(q.projectRows(rows, ['minute', 'marstek_charge_w']), [{ minute: '2026-11-08 10:00', marstek_charge_w: '250' }]);
 });
 
+test('marstek extended fields parsing and projection', () => {
+    // Test parsing all new Marstek fields
+    assert.deepStrictEqual(
+        q.parseFields('marstek_discharge_w,marstek_load_w,marstek_grid_w,marstek_report_time'),
+        ['minute', 'marstek_discharge_w', 'marstek_load_w', 'marstek_grid_w', 'marstek_report_time']
+    );
+    
+    // Test with all Marstek fields combined
+    assert.deepStrictEqual(
+        q.parseFields('marstek_soc_percent,marstek_charge_w,marstek_discharge_w,marstek_load_w,marstek_grid_w'),
+        ['minute', 'marstek_soc_percent', 'marstek_charge_w', 'marstek_discharge_w', 'marstek_load_w', 'marstek_grid_w']
+    );
+    
+    // Test projection with new fields
+    const rows = [{
+        minute: '2026-11-08 10:00',
+        marstek_soc_percent: '85',
+        marstek_charge_w: '250',
+        marstek_discharge_w: '0',
+        marstek_load_w: '150',
+        marstek_grid_w: '100',
+        marstek_report_time: '2026-11-08 10:00:00',
+        device_id: 'marstek'
+    }];
+    
+    assert.deepStrictEqual(
+        q.projectRows(rows, ['minute', 'marstek_discharge_w', 'marstek_load_w']),
+        [{ minute: '2026-11-08 10:00', marstek_discharge_w: '0', marstek_load_w: '150' }]
+    );
+    
+    assert.deepStrictEqual(
+        q.projectRows(rows, ['minute', 'marstek_grid_w', 'marstek_report_time']),
+        [{ minute: '2026-11-08 10:00', marstek_grid_w: '100', marstek_report_time: '2026-11-08 10:00:00' }]
+    );
+});
+
 function serve(handler) {
     return new Promise((resolve) => {
         const srv = http.createServer((req, res) => {
