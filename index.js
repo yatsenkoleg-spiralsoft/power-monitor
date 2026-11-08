@@ -87,7 +87,9 @@ const KITCHEN_LIGHT_DEVICE_ID = 'bf2a33ded6cd1955cbumtz';
 const BOILER_DEVICE_ID = 'bf935c8cff3752fbecgfew';
 const PLANT_LIGHT_DEVICE_ID = 'bffd4e253c18de762ct932';
 const TH_SENSOR_DEVICE_ID = 'bf2bf2252c37a041b0tbvs';
+const TH_SENSOR2_DEVICE_ID = 'bf829227fc480fdeabiwof';
 const SOCKET2_DEVICE_ID = 'bfcbd371e1af7827f9sj79';
+const SOCKET3_DEVICE_ID = 'bfc46baade5494be88qqgb';
 
 const CONTROLLABLE_DEVICE_IDS = new Set([
     SOCKET2_DEVICE_ID,
@@ -107,6 +109,7 @@ const CONTROL_ID_MAP = {
 
 const DEVICE_SORT_ORDER = [
     SOCKET2_DEVICE_ID,
+    SOCKET3_DEVICE_ID,
     HEATER_DEVICE_ID,
     'ecoflow',
     'marstek',
@@ -114,6 +117,7 @@ const DEVICE_SORT_ORDER = [
     BOILER_DEVICE_ID,
     PLANT_LIGHT_DEVICE_ID,
     TH_SENSOR_DEVICE_ID,
+    TH_SENSOR2_DEVICE_ID,
 ];
 
 function sortDevices(devices) {
