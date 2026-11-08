@@ -222,3 +222,29 @@ test('PingOff retried on failure with witness guard', async () => {
     await reportToSvitlobot(p, offline, offline, online, undefined, { key: 'K', fetchImpl });
     assert.equal(n, 2);
 });
+
+test('REGRESSION: dual witness logic - either kitchen OR corridor online confirms internet', async () => {
+    const p = memPool(); const calls = [];
+    const fetchImpl = async (url) => { calls.push(url.split('?')[0].split('/').pop()); return { ok: true, status: 200 }; };
+    const o = { key: 'K', fetchImpl };
+    
+    // Kitchen only online + both sockets offline → OFF (kitchen proves internet)
+    await reportToSvitlobot(p, offline, offline, online, offline, o);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 'channelPingOff');
+    
+    calls.length = 0;
+    p.s.sent = 0;
+    
+    // Corridor only online + both sockets offline → OFF (corridor proves internet)
+    await reportToSvitlobot(p, offline, offline, offline, online, o);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 'channelPingOff');
+    
+    calls.length = 0;
+    p.s.sent = 0;
+    
+    // Both witnesses offline + both sockets offline → UNKNOWN (cannot prove internet)
+    await reportToSvitlobot(p, offline, offline, offline, offline, o);
+    assert.equal(calls.length, 0);
+});

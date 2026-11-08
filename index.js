@@ -505,7 +505,7 @@ app.post('/monitor', async (req, res) => {
         const inputSocket = results.find((r) => r.deviceId === SOCKET1_DEVICE_ID || r.deviceId === HEATER_DEVICE_ID);
         const kitchenSocket = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
         const kitchenLight = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
-        const corridorLight = undefined; // TODO: corridor light device ID not found in codebase
+        const corridorLight = results.find((r) => r.deviceId === BOILER_DEVICE_ID);
         await svitlobot.reportToSvitlobot(
             db.getPool(),
             inputSocket,
