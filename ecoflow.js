@@ -145,6 +145,10 @@ async function fetchEcoFlowStatus(deviceSn, forceRefresh = false) {
  * Напряжение: inv.acInVol в мВ → делим на 1000.
  * Потребление (выдача): inv.outputWatts или pd.wattsOutSum (Вт).
  * Зарядка (вход): pd.wattsInSum (Вт) — суммарная мощность на входе.
+ * 
+ * NOTE: Without actual first device field evidence, only using documented field names.
+ * If first device still missing output power, need real API response to identify correct field.
+ * 
  * @param {Record<string, any>} deviceState
  * @returns {{ voltageV: number|null, outputW: number|null, inputW: number|null }}
  */

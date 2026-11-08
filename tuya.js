@@ -12,7 +12,9 @@ const DEVICE_IDS = process.env.DEVICE_IDS
     : {
         'Розетка 1': 'bf3c70a960958bcf11ruml',
         'Розетка 2': 'bfcbd371e1af7827f9sj79',
+        'Розетка 3': 'bfc46baade5494be88qqgb',
         'T & H Sensor': 'bf2bf2252c37a041b0tbvs',
+        'T & H Sensor 2': 'bf829227fc480fdeabiwof',
         'Свет на кухне': 'bf2a33ded6cd1955cbumtz',
         'Бойлер': 'bf935c8cff3752fbecgfew',
         'Подсветка цветам': 'bffd4e253c18de762ct932',
@@ -194,6 +196,7 @@ async function getDeviceInfo(deviceId) {
  * Возвращает объект с информацией о статусе
  */
 const TH_SENSOR_DEVICE_ID = 'bf2bf2252c37a041b0tbvs';
+const TH_SENSOR2_DEVICE_ID = 'bf829227fc480fdeabiwof';
 
 /**
  * Строит объект { code: value } из массива статуса Tuya (result или deviceInfo.status).
@@ -259,8 +262,8 @@ async function checkDeviceAvailability(deviceId, deviceName = null) {
         const deviceInfo = await getDeviceInfo(deviceId);
         let statusMap = {};
         
-        if (deviceId === TH_SENSOR_DEVICE_ID) {
-            // Градусник: только shadow/properties (без /status и iot-03).
+        if (deviceId === TH_SENSOR_DEVICE_ID || deviceId === TH_SENSOR2_DEVICE_ID) {
+            // Градусники: только shadow/properties (без /status и iot-03).
             // Добавляем cache-bust: уникальный query и заголовки, чтобы уменьшить шанс ответа из кеша Tuya.
             try {
                 const pathShadow = `/v2.0/cloud/thing/${deviceId}/shadow/properties`;
