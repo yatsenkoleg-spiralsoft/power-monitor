@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node newDevices.test.js && node test/newDevicesIntegration.test.js && node svitlobot.test.js && node alertPush.test.js && node scheduleDiff.test.js && node test/minuteQuery.test.js",
+    "test": "node newDevices.test.js && node test/newDevicesIntegration.test.js && node svitlobot.test.js && node alertPush.test.js && node scheduleDiff.test.js && node test/minuteQuery.test.js && node test/marstek.test.js",
     "curl-debug": "node print-curl.js"
   },
   "keywords": [
