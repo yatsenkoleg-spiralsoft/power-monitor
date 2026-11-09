@@ -16,6 +16,10 @@ let tokenCachedAt = 0;
 const CACHE_TTL_MS = 30 * 1000; // 30 seconds
 let deviceCache = { state: null, cachedAt: 0, inFlightFetch: null };
 
+// Last good reading cache for grace period during transient failures
+const GRACE_PERIOD_MS = 15 * 60 * 1000; // 15 minutes
+let lastGoodReading = { state: null, cachedAt: 0 };
+
 /**
  * Compute MD5 hash for password
  * @param {string} password
@@ -60,7 +64,7 @@ async function login() {
 /**
  * Get device status from Marstek cloud
  * @param {string} token
- * @returns {Promise<Array>} list of devices
+ * @returns {Promise<{ devices: Array, rawCode: number|string|null, rawMsg: string|null }>}
  */
 async function getDeviceStatus(token) {
     try {
@@ -70,17 +74,22 @@ async function getDeviceStatus(token) {
         });
 
         const data = response.data;
+        const rawCode = data?.code ?? null;
+        const rawMsg = data?.msg ?? null;
 
         // code 8 = no access (token expired)
         if (data && data.code === 8) {
             throw new Error('TOKEN_EXPIRED');
         }
 
-        if (data && Array.isArray(data.data)) {
-            return data.data;
+        // code 1 = ok/success based on observed behavior
+        if (data && data.code === 1 && Array.isArray(data.data)) {
+            return { devices: data.data, rawCode, rawMsg };
         }
 
-        return [];
+        // Unexpected response: log code/msg for diagnosis
+        console.warn(`Marstek getDeviceList unexpected response: code=${rawCode}, msg=${rawMsg}`);
+        return { devices: [], rawCode, rawMsg };
     } catch (error) {
         if (error.message === 'TOKEN_EXPIRED') {
             throw error;
@@ -93,9 +102,9 @@ async function getDeviceStatus(token) {
 }
 
 /**
- * Fetch Marstek battery status with retry on token expiration
+ * Fetch Marstek battery status with retry on token expiration and resilience for transient failures
  * @param {boolean} forceRefresh
- * @returns {Promise<{ deviceState: Record<string, any>, lastUpdate: Date }>}
+ * @returns {Promise<{ deviceState: Record<string, any>, lastUpdate: Date, fromGracePeriod: boolean }>}
  */
 async function fetchMarstekStatus(forceRefresh = false) {
     if (!MARSTEK_EMAIL || !MARSTEK_PASSWORD) {
@@ -107,6 +116,7 @@ async function fetchMarstekStatus(forceRefresh = false) {
         return {
             deviceState: deviceCache.state,
             lastUpdate: new Date(deviceCache.cachedAt),
+            fromGracePeriod: false,
         };
     }
 
@@ -115,44 +125,103 @@ async function fetchMarstekStatus(forceRefresh = false) {
     }
 
     deviceCache.inFlightFetch = (async () => {
-        try {
-            let token = cachedToken;
+        let token = cachedToken;
+        let retryCount = 0;
+        const MAX_RETRIES = 1;
 
-            // Try with cached token first
-            if (!token) {
-                token = await login();
-            }
-
-            let devices;
+        while (retryCount <= MAX_RETRIES) {
             try {
-                devices = await getDeviceStatus(token);
-            } catch (error) {
-                // On token expiration, re-login and retry once
-                if (error.message === 'TOKEN_EXPIRED') {
-                    console.log('Marstek token expired, re-logging in...');
+                // Try with cached token first, or login if no token
+                if (!token) {
                     token = await login();
-                    devices = await getDeviceStatus(token);
-                } else {
-                    throw error;
                 }
+
+                let result;
+                try {
+                    result = await getDeviceStatus(token);
+                } catch (error) {
+                    // On token expiration, re-login and retry once
+                    if (error.message === 'TOKEN_EXPIRED') {
+                        console.log('Marstek token expired, re-logging in...');
+                        token = await login();
+                        result = await getDeviceStatus(token);
+                    } else {
+                        throw error;
+                    }
+                }
+
+                const { devices, rawCode, rawMsg } = result;
+
+                // Find VNSE3-0 device
+                const vnse3Device = devices.find(d => d.type === 'VNSE3-0');
+                if (!vnse3Device) {
+                    // Device not found: could be transient issue with cloud API
+                    // Log the response for diagnosis (without logging the token)
+                    console.warn(`Marstek VENUS-E 3.0 device not found. Cloud response: code=${rawCode}, msg=${rawMsg}, deviceCount=${devices.length}`);
+                    
+                    // If this is first attempt, retry once with fresh login
+                    if (retryCount < MAX_RETRIES) {
+                        console.log('Marstek device not found, re-logging in and retrying...');
+                        retryCount++;
+                        token = await login();
+                        continue;
+                    }
+                    
+                    // All retries exhausted. Check if we have a recent good reading within grace period
+                    if (lastGoodReading.state && now - lastGoodReading.cachedAt < GRACE_PERIOD_MS) {
+                        const age = Math.round((now - lastGoodReading.cachedAt) / 1000);
+                        console.warn(`Marstek device not found after retry. Serving last good reading from ${age}s ago (within grace period).`);
+                        return {
+                            deviceState: lastGoodReading.state,
+                            lastUpdate: new Date(lastGoodReading.cachedAt),
+                            fromGracePeriod: true,
+                        };
+                    }
+                    
+                    // No good reading within grace period, throw error
+                    throw new Error(`Marstek VENUS-E 3.0 device not found in account (cloud code=${rawCode})`);
+                }
+
+                // Success: update both caches
+                deviceCache.state = vnse3Device;
+                deviceCache.cachedAt = Date.now();
+                lastGoodReading.state = vnse3Device;
+                lastGoodReading.cachedAt = deviceCache.cachedAt;
+
+                return {
+                    deviceState: vnse3Device,
+                    lastUpdate: new Date(deviceCache.cachedAt),
+                    fromGracePeriod: false,
+                };
+            } catch (err) {
+                // If we've exhausted retries, check grace period as fallback
+                if (retryCount >= MAX_RETRIES) {
+                    if (lastGoodReading.state && now - lastGoodReading.cachedAt < GRACE_PERIOD_MS) {
+                        const age = Math.round((now - lastGoodReading.cachedAt) / 1000);
+                        console.warn(`Marstek fetch failed: ${err.message}. Serving last good reading from ${age}s ago (within grace period).`);
+                        return {
+                            deviceState: lastGoodReading.state,
+                            lastUpdate: new Date(lastGoodReading.cachedAt),
+                            fromGracePeriod: true,
+                        };
+                    }
+                    throw err;
+                }
+                
+                // For unexpected errors on first attempt, retry once
+                if (retryCount < MAX_RETRIES && err.message !== 'TOKEN_EXPIRED') {
+                    console.warn(`Marstek fetch error on attempt ${retryCount + 1}: ${err.message}. Retrying...`);
+                    retryCount++;
+                    token = null; // Force fresh login on retry
+                    continue;
+                }
+                
+                throw err;
             }
-
-            // Find VNSE3-0 device
-            const vnse3Device = devices.find(d => d.type === 'VNSE3-0');
-            if (!vnse3Device) {
-                throw new Error('Marstek VENUS-E 3.0 device not found in account');
-            }
-
-            deviceCache.state = vnse3Device;
-            deviceCache.cachedAt = Date.now();
-
-            return {
-                deviceState: vnse3Device,
-                lastUpdate: new Date(deviceCache.cachedAt),
-            };
-        } catch (err) {
-            throw err;
         }
+
+        // Should not reach here, but for safety
+        throw new Error('Marstek fetch: max retries exhausted');
     })();
 
     try {
@@ -166,7 +235,7 @@ async function fetchMarstekStatus(forceRefresh = false) {
 /**
  * Get Marstek battery data for all configured devices
  * @param {boolean} forceRefresh
- * @returns {Promise<Array<{ deviceSn: string, deviceId: string, deviceName: string, soc: number|null, charge: number|null, discharge: number|null, load: number|null, pv: number|null, grid: number|null, reportTime: Date|null, error: string|null }>>}
+ * @returns {Promise<Array<{ deviceSn: string, deviceId: string, deviceName: string, soc: number|null, charge: number|null, discharge: number|null, load: number|null, pv: number|null, grid: number|null, reportTime: Date|null, error: string|null, fromGracePeriod: boolean }>>}
  */
 async function getMarstekDataForAllDevices(forceRefresh = false) {
     if (!MARSTEK_EMAIL || !MARSTEK_PASSWORD) {
@@ -174,7 +243,7 @@ async function getMarstekDataForAllDevices(forceRefresh = false) {
     }
 
     try {
-        const { deviceState } = await fetchMarstekStatus(forceRefresh);
+        const { deviceState, fromGracePeriod } = await fetchMarstekStatus(forceRefresh);
 
         const soc = deviceState.soc != null ? Number(deviceState.soc) : null;
         const charge = deviceState.charge != null ? Number(deviceState.charge) : null;
@@ -195,7 +264,8 @@ async function getMarstekDataForAllDevices(forceRefresh = false) {
             pv: pv !== null && !isNaN(pv) ? pv : null,
             grid: grid !== null && !isNaN(grid) ? grid : null,
             reportTime,
-            error: null,
+            error: fromGracePeriod ? 'Using cached data (cloud temporarily unavailable)' : null,
+            fromGracePeriod,
         }];
     } catch (error) {
         console.error('Ошибка получения данных Marstek:', error.message);
@@ -211,6 +281,7 @@ async function getMarstekDataForAllDevices(forceRefresh = false) {
             grid: null,
             reportTime: null,
             error: error.message,
+            fromGracePeriod: false,
         }];
     }
 }

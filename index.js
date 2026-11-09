@@ -318,14 +318,14 @@ app.post('/monitor', async (req, res) => {
                 const allDevices = await marstek.getMarstekDataForAllDevices();
                 
                 for (const device of allDevices) {
-                    const { deviceId, deviceName, soc, charge, discharge, load, pv, grid, reportTime, error } = device;
+                    const { deviceId, deviceName, soc, charge, discharge, load, pv, grid, reportTime, error, fromGracePeriod } = device;
                     
                     if (soc !== null || charge !== null || discharge !== null || load !== null || pv !== null || grid !== null) {
                         try {
                             await savePowerStatusTracked(
                                 deviceId,
                                 deviceName,
-                                true, // isOnline
+                                true, // isOnline (stay online during grace period)
                                 null, // responseTimeMs
                                 null, // powerConsumptionW
                                 null, // voltageV
@@ -351,6 +351,7 @@ app.post('/monitor', async (req, res) => {
                             if (pv !== null) parts.push(`PV ${pv} Вт`);
                             if (grid !== null) parts.push(`сеть ${grid} Вт`);
                             if (reportTime) parts.push(`обновление ${reportTime.toISOString()}`);
+                            if (fromGracePeriod) parts.push('(кеш: облако временно недоступно)');
                             if (parts.length) console.log(`${deviceName}: ${parts.join(', ')}`);
                         } catch (dbError) {
                             console.error(`Ошибка сохранения данных ${deviceName} в БД:`, dbError.message);
@@ -604,6 +605,7 @@ app.get('/monitor', async (req, res) => {
             marstekGridW: device.grid,
             marstekReportTime: device.reportTime,
             error: device.error,
+            fromGracePeriod: device.fromGracePeriod || false,
         }));
 
         const deviceList = sortDevices([
