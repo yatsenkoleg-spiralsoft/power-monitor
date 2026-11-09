@@ -270,7 +270,7 @@ test('Marstek: transient failure serves from grace period', async () => {
         assert.equal(result2.length, 1);
         assert.equal(result2[0].soc, 90); // Same as first reading
         assert.equal(result2[0].fromGracePeriod, true);
-        assert.equal(result2[0].error, 'Using cached data (cloud temporarily unavailable)');
+        assert.equal(result2[0].error, null); // Keep null to avoid red error text in app
         
         // Check for warning about serving from cache
         const hasCacheWarning = consoleWarns.some(log => log.includes('Serving last good reading'));

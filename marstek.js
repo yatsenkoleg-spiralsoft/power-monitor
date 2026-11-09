@@ -264,7 +264,7 @@ async function getMarstekDataForAllDevices(forceRefresh = false) {
             pv: pv !== null && !isNaN(pv) ? pv : null,
             grid: grid !== null && !isNaN(grid) ? grid : null,
             reportTime,
-            error: fromGracePeriod ? 'Using cached data (cloud temporarily unavailable)' : null,
+            error: null, // Keep null even during grace period (red error text in app)
             fromGracePeriod,
         }];
     } catch (error) {
