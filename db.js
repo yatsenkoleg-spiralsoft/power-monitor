@@ -26,6 +26,7 @@ if (!dbConfig.host || !dbConfig.database || !dbConfig.user || !dbConfig.password
 
 // Создаем пул подключений
 let pool = null;
+let gridStateMigrationComplete = false;
 
 /**
  * Получает или создает пул подключений к MySQL
@@ -46,6 +47,93 @@ async function closePool() {
         await pool.end();
         pool = null;
         console.log('Пул подключений к MySQL закрыт');
+    }
+}
+
+/**
+ * Автоматическая идемпотентная миграция grid_state таблицы при старте.
+ * Добавляет колонки для обработки UNKNOWN состояния и debounce, если их нет.
+ */
+async function ensureGridStateMigration() {
+    if (gridStateMigrationComplete) return;
+    
+    const pool = getPool();
+    const tableName = 'grid_state';
+    const dbName = dbConfig.database;
+    
+    try {
+        // Проверяем существование колонок через information_schema
+        const [columns] = await pool.execute(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+            [dbName, tableName]
+        );
+        
+        const existingColumns = new Set(columns.map(row => row.COLUMN_NAME));
+        
+        // Добавляем last_confirmed_present, если отсутствует
+        if (!existingColumns.has('last_confirmed_present')) {
+            console.log('Миграция grid_state: добавляем last_confirmed_present');
+            await pool.execute(
+                `ALTER TABLE ${tableName} 
+                 ADD COLUMN last_confirmed_present TINYINT NULL 
+                 COMMENT '1=grid present, 0=absent, NULL=unknown (last confirmed state before UNKNOWN)' 
+                 AFTER confirmed_present`
+            );
+        }
+        
+        // Добавляем unknown_since, если отсутствует
+        if (!existingColumns.has('unknown_since')) {
+            console.log('Миграция grid_state: добавляем unknown_since');
+            await pool.execute(
+                `ALTER TABLE ${tableName} 
+                 ADD COLUMN unknown_since DATETIME NULL 
+                 COMMENT 'UTC: when continuous UNKNOWN state began' 
+                 AFTER pending_streak`
+            );
+        }
+        
+        // Добавляем pending_off_minutes, если отсутствует
+        if (!existingColumns.has('pending_off_minutes')) {
+            console.log('Миграция grid_state: добавляем pending_off_minutes');
+            await pool.execute(
+                `ALTER TABLE ${tableName} 
+                 ADD COLUMN pending_off_minutes INT NOT NULL DEFAULT 0 
+                 COMMENT 'Minutes of consecutive ABSENT readings (for 2-min debounce)' 
+                 AFTER pending_streak`
+            );
+        }
+        
+        // Добавляем pending_on_minutes, если отсутствует
+        if (!existingColumns.has('pending_on_minutes')) {
+            console.log('Миграция grid_state: добавляем pending_on_minutes');
+            await pool.execute(
+                `ALTER TABLE ${tableName} 
+                 ADD COLUMN pending_on_minutes INT NOT NULL DEFAULT 0 
+                 COMMENT 'Minutes of consecutive PRESENT readings after confirmed ABSENT (for 2-min debounce)' 
+                 AFTER pending_off_minutes`
+            );
+        }
+        
+        // Backfill last_confirmed_present из confirmed_present, где еще NULL
+        const [rows] = await pool.execute(
+            `SELECT confirmed_present, last_confirmed_present FROM ${tableName} WHERE id = 1`
+        );
+        
+        if (rows.length > 0 && rows[0].confirmed_present !== null && rows[0].last_confirmed_present === null) {
+            console.log('Миграция grid_state: backfill last_confirmed_present');
+            await pool.execute(
+                `UPDATE ${tableName} 
+                 SET last_confirmed_present = confirmed_present 
+                 WHERE id = 1 AND confirmed_present IS NOT NULL AND last_confirmed_present IS NULL`
+            );
+        }
+        
+        gridStateMigrationComplete = true;
+        console.log('Миграция grid_state завершена');
+    } catch (error) {
+        console.error('Ошибка миграции grid_state:', error.message);
+        throw error;
     }
 }
 
@@ -636,13 +724,16 @@ async function getAllFcmTokens() {
  * }>}
  */
 async function processGridState(rawState) {
+    // Ensure migration is complete before processing
+    await ensureGridStateMigration();
+    
     const pool = getPool();
     const [rows] = await pool.execute('SELECT * FROM grid_state WHERE id = 1');
     let state = rows[0];
 
     if (!state) {
         await pool.execute(
-            'INSERT INTO grid_state (id, confirmed_present, last_confirmed_present, pending_present, pending_streak, pending_off_minutes, unknown_since) VALUES (1, NULL, NULL, NULL, 0, 0, NULL)'
+            'INSERT INTO grid_state (id, confirmed_present, last_confirmed_present, pending_present, pending_streak, pending_off_minutes, pending_on_minutes, unknown_since) VALUES (1, NULL, NULL, NULL, 0, 0, 0, NULL)'
         );
         return { 
             changed: false, 
@@ -657,6 +748,7 @@ async function processGridState(rawState) {
     let confirmedPresent = state.confirmed_present;
     let lastConfirmedPresent = state.last_confirmed_present;
     let pendingOffMinutes = state.pending_off_minutes || 0;
+    let pendingOnMinutes = state.pending_on_minutes || 0;
     let unknownSince = state.unknown_since;
     let shouldNotify = false;
     let changed = false;
@@ -670,9 +762,10 @@ async function processGridState(rawState) {
         
         // Don't change confirmed state, don't notify
         // Keep last confirmed state for widget
+        // Reset pending counters
         await pool.execute(
             `UPDATE grid_state
-             SET unknown_since = ?, pending_off_minutes = 0, updated_at = NOW()
+             SET unknown_since = ?, pending_off_minutes = 0, pending_on_minutes = 0, updated_at = NOW()
              WHERE id = 1`,
             [unknownSince]
         );
@@ -699,24 +792,86 @@ async function processGridState(rawState) {
     if (rawState === 'present') {
         pendingOffMinutes = 0;
         
-        // Immediate confirmation for PRESENT (no debounce needed for power restoration)
-        if (confirmedPresent !== 1) {
+        // If confirmed state is NULL (initial state), confirm immediately
+        if (confirmedPresent === null) {
             confirmedPresent = 1;
             lastConfirmedPresent = 1;
-            shouldNotify = confirmedPresent !== state.confirmed_present && state.confirmed_present !== null;
             changed = true;
+            
+            await pool.execute(
+                `UPDATE grid_state
+                 SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW()
+                 WHERE id = 1`
+            );
+            
+            return {
+                changed,
+                confirmedPresent: true,
+                shouldNotify: false, // No notification on initial state
+                isUnknown: false,
+                lastConfirmedPresent: true,
+                shouldPingSvitlobot: true
+            };
         }
+        
+        // If confirmed state is ABSENT (0), require 2-minute debounce before confirming PRESENT
+        if (confirmedPresent === 0) {
+            pendingOnMinutes += 1;
+            
+            // Only confirm PRESENT after 2 consecutive minutes
+            if (pendingOnMinutes >= 2) {
+                confirmedPresent = 1;
+                lastConfirmedPresent = 1;
+                shouldNotify = true;
+                changed = true;
+                
+                await pool.execute(
+                    `UPDATE grid_state
+                     SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW()
+                     WHERE id = 1`
+                );
+                
+                return {
+                    changed,
+                    confirmedPresent: true,
+                    shouldNotify,
+                    isUnknown: false,
+                    lastConfirmedPresent: true,
+                    shouldPingSvitlobot: true
+                };
+            } else {
+                // Still pending, don't confirm yet
+                await pool.execute(
+                    `UPDATE grid_state
+                     SET pending_off_minutes = 0, pending_on_minutes = ?, unknown_since = NULL, updated_at = NOW()
+                     WHERE id = 1`,
+                    [pendingOnMinutes]
+                );
+                
+                return {
+                    changed: false,
+                    confirmedPresent: false, // Still confirmed as absent
+                    shouldNotify: false,
+                    isUnknown: false,
+                    lastConfirmedPresent: false,
+                    shouldPingSvitlobot: false // Don't ping 'on' while pending
+                };
+            }
+        }
+        
+        // If already confirmed PRESENT, keep it
+        pendingOnMinutes = 0;
         
         await pool.execute(
             `UPDATE grid_state
-             SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, unknown_since = NULL, updated_at = NOW()
+             SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW()
              WHERE id = 1`
         );
         
         return {
-            changed,
+            changed: false,
             confirmedPresent: true,
-            shouldNotify,
+            shouldNotify: false,
             isUnknown: false,
             lastConfirmedPresent: true,
             shouldPingSvitlobot: true
@@ -726,6 +881,7 @@ async function processGridState(rawState) {
     // Handle ABSENT state (requires 2-minute debounce)
     if (rawState === 'absent') {
         pendingOffMinutes += 1;
+        pendingOnMinutes = 0;
         
         // Only confirm ABSENT after 2 consecutive minutes
         if (pendingOffMinutes >= 2 && confirmedPresent !== 0) {
@@ -737,7 +893,7 @@ async function processGridState(rawState) {
         
         await pool.execute(
             `UPDATE grid_state
-             SET confirmed_present = ?, last_confirmed_present = ?, pending_off_minutes = ?, unknown_since = NULL, updated_at = NOW()
+             SET confirmed_present = ?, last_confirmed_present = ?, pending_off_minutes = ?, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW()
              WHERE id = 1`,
             [confirmedPresent, lastConfirmedPresent, pendingOffMinutes]
         );
@@ -956,6 +1112,7 @@ async function testConnection() {
 module.exports = {
     getPool,
     closePool,
+    ensureGridStateMigration,
     savePowerStatus,
     getStats,
     getDailyDetails,

@@ -9,6 +9,7 @@ function createMemPool() {
         pending_present: null,
         pending_streak: 0,
         pending_off_minutes: 0,
+        pending_on_minutes: 0,
         unknown_since: null,
         updated_at: new Date()
     };
@@ -17,6 +18,20 @@ function createMemPool() {
         state,
         async execute(sql, params) {
             if (/^SELECT/.test(sql)) {
+                // Mock information_schema query for migration check
+                if (sql.includes('information_schema.COLUMNS')) {
+                    return [[
+                        { COLUMN_NAME: 'id' },
+                        { COLUMN_NAME: 'confirmed_present' },
+                        { COLUMN_NAME: 'last_confirmed_present' },
+                        { COLUMN_NAME: 'pending_present' },
+                        { COLUMN_NAME: 'pending_streak' },
+                        { COLUMN_NAME: 'pending_off_minutes' },
+                        { COLUMN_NAME: 'pending_on_minutes' },
+                        { COLUMN_NAME: 'unknown_since' },
+                        { COLUMN_NAME: 'updated_at' }
+                    ]];
+                }
                 return [[state]];
             }
             if (/^INSERT/.test(sql)) {
@@ -40,6 +55,15 @@ function createMemPool() {
                             state.pending_off_minutes = params[params.length - 1 - idx] || params[2] || 0;
                         }
                     }
+                    if (sql.includes('pending_on_minutes = ?')) {
+                        const matches = sql.match(/pending_on_minutes = \?/);
+                        if (matches) {
+                            // Find the parameter index for pending_on_minutes
+                            const questionMarks = sql.substring(0, sql.indexOf('pending_on_minutes')).match(/\?/g);
+                            const idx = questionMarks ? questionMarks.length : 0;
+                            if (params[idx] !== undefined) state.pending_on_minutes = params[idx];
+                        }
+                    }
                     if (sql.includes('unknown_since = ?')) {
                         const idx = 0;
                         state.unknown_since = params[idx];
@@ -50,9 +74,14 @@ function createMemPool() {
                 if (sql.includes('confirmed_present = 1')) state.confirmed_present = 1;
                 if (sql.includes('last_confirmed_present = 1')) state.last_confirmed_present = 1;
                 if (sql.includes('pending_off_minutes = 0')) state.pending_off_minutes = 0;
+                if (sql.includes('pending_on_minutes = 0')) state.pending_on_minutes = 0;
                 if (sql.includes('unknown_since = NULL')) state.unknown_since = null;
                 
                 return [{ affectedRows: 1 }];
+            }
+            if (/^ALTER TABLE/.test(sql)) {
+                // Mock ALTER TABLE for migration
+                return [{ affectedRows: 0 }];
             }
             return [{}];
         }
@@ -66,7 +95,7 @@ async function processGridState(rawState, pool) {
 
     if (!state) {
         await pool.execute(
-            'INSERT INTO grid_state (id, confirmed_present, last_confirmed_present, pending_present, pending_streak, pending_off_minutes, unknown_since) VALUES (1, NULL, NULL, NULL, 0, 0, NULL)'
+            'INSERT INTO grid_state (id, confirmed_present, last_confirmed_present, pending_present, pending_streak, pending_off_minutes, pending_on_minutes, unknown_since) VALUES (1, NULL, NULL, NULL, 0, 0, 0, NULL)'
         );
         return { 
             changed: false, 
@@ -81,6 +110,7 @@ async function processGridState(rawState, pool) {
     let confirmedPresent = state.confirmed_present;
     let lastConfirmedPresent = state.last_confirmed_present;
     let pendingOffMinutes = state.pending_off_minutes || 0;
+    let pendingOnMinutes = state.pending_on_minutes || 0;
     let unknownSince = state.unknown_since;
     let shouldNotify = false;
     let changed = false;
@@ -91,7 +121,7 @@ async function processGridState(rawState, pool) {
         }
         
         await pool.execute(
-            `UPDATE grid_state SET unknown_since = ?, pending_off_minutes = 0, updated_at = NOW() WHERE id = 1`,
+            `UPDATE grid_state SET unknown_since = ?, pending_off_minutes = 0, pending_on_minutes = 0, updated_at = NOW() WHERE id = 1`,
             [unknownSince]
         );
         
@@ -114,21 +144,77 @@ async function processGridState(rawState, pool) {
     if (rawState === 'present') {
         pendingOffMinutes = 0;
         
-        if (confirmedPresent !== 1) {
+        // Initial NULL state confirms immediately
+        if (confirmedPresent === null) {
             confirmedPresent = 1;
             lastConfirmedPresent = 1;
-            shouldNotify = confirmedPresent !== state.confirmed_present && state.confirmed_present !== null;
             changed = true;
+            
+            await pool.execute(
+                `UPDATE grid_state SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW() WHERE id = 1`
+            );
+            
+            return {
+                changed,
+                confirmedPresent: true,
+                shouldNotify: false,
+                isUnknown: false,
+                lastConfirmedPresent: true,
+                shouldPingSvitlobot: true
+            };
         }
         
+        // If confirmed ABSENT, require 2-minute debounce
+        if (confirmedPresent === 0) {
+            pendingOnMinutes += 1;
+            
+            if (pendingOnMinutes >= 2) {
+                confirmedPresent = 1;
+                lastConfirmedPresent = 1;
+                shouldNotify = true;
+                changed = true;
+                
+                await pool.execute(
+                    `UPDATE grid_state SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW() WHERE id = 1`
+                );
+                
+                return {
+                    changed,
+                    confirmedPresent: true,
+                    shouldNotify,
+                    isUnknown: false,
+                    lastConfirmedPresent: true,
+                    shouldPingSvitlobot: true
+                };
+            } else {
+                // Still pending
+                await pool.execute(
+                    `UPDATE grid_state SET pending_off_minutes = 0, pending_on_minutes = ?, unknown_since = NULL, updated_at = NOW() WHERE id = 1`,
+                    [pendingOnMinutes]
+                );
+                
+                return {
+                    changed: false,
+                    confirmedPresent: false,
+                    shouldNotify: false,
+                    isUnknown: false,
+                    lastConfirmedPresent: false,
+                    shouldPingSvitlobot: false
+                };
+            }
+        }
+        
+        // Already confirmed PRESENT
+        pendingOnMinutes = 0;
+        
         await pool.execute(
-            `UPDATE grid_state SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, unknown_since = NULL, updated_at = NOW() WHERE id = 1`
+            `UPDATE grid_state SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW() WHERE id = 1`
         );
         
         return {
-            changed,
+            changed: false,
             confirmedPresent: true,
-            shouldNotify,
+            shouldNotify: false,
             isUnknown: false,
             lastConfirmedPresent: true,
             shouldPingSvitlobot: true
@@ -137,6 +223,7 @@ async function processGridState(rawState, pool) {
 
     if (rawState === 'absent') {
         pendingOffMinutes += 1;
+        pendingOnMinutes = 0;
         
         if (pendingOffMinutes >= 2 && confirmedPresent !== 0) {
             confirmedPresent = 0;
@@ -146,7 +233,7 @@ async function processGridState(rawState, pool) {
         }
         
         await pool.execute(
-            `UPDATE grid_state SET confirmed_present = ?, last_confirmed_present = ?, pending_off_minutes = ?, unknown_since = NULL, updated_at = NOW() WHERE id = 1`,
+            `UPDATE grid_state SET confirmed_present = ?, last_confirmed_present = ?, pending_off_minutes = ?, pending_on_minutes = 0, unknown_since = NULL, updated_at = NOW() WHERE id = 1`,
             [confirmedPresent, lastConfirmedPresent, pendingOffMinutes]
         );
         
@@ -292,4 +379,80 @@ test('REGRESSION: single socket drops briefly -> stays PRESENT, no notification'
     assert.equal(result.confirmedPresent, true);
     assert.equal(result.shouldNotify, false);
     assert.equal(pool.state.pending_off_minutes, 0);
+});
+
+test('NEW: PRESENT after ABSENT requires 2-min debounce, 1 min -> no confirm', async () => {
+    const pool = createMemPool();
+    pool.state.confirmed_present = 0;
+    pool.state.last_confirmed_present = 0;
+    
+    // First minute of present
+    let result = await processGridState('present', pool);
+    assert.equal(result.confirmedPresent, false); // Still confirmed as absent
+    assert.equal(result.shouldNotify, false);
+    assert.equal(result.shouldPingSvitlobot, false); // Don't ping 'on' yet
+    assert.equal(pool.state.pending_on_minutes, 1);
+    assert.equal(pool.state.confirmed_present, 0); // Still 0
+});
+
+test('NEW: PRESENT after ABSENT, 2 min -> confirm and notify', async () => {
+    const pool = createMemPool();
+    pool.state.confirmed_present = 0;
+    pool.state.last_confirmed_present = 0;
+    
+    // First minute
+    await processGridState('present', pool);
+    assert.equal(pool.state.pending_on_minutes, 1);
+    
+    // Second minute - should confirm and notify
+    let result = await processGridState('present', pool);
+    assert.equal(result.confirmedPresent, true);
+    assert.equal(result.shouldNotify, true);
+    assert.equal(result.shouldPingSvitlobot, true);
+    assert.equal(pool.state.confirmed_present, 1);
+    assert.equal(pool.state.pending_on_minutes, 0);
+});
+
+test('NEW: UNKNOWN interrupts pending_on_minutes counter', async () => {
+    const pool = createMemPool();
+    pool.state.confirmed_present = 0;
+    pool.state.last_confirmed_present = 0;
+    
+    // First minute of present
+    await processGridState('present', pool);
+    assert.equal(pool.state.pending_on_minutes, 1);
+    
+    // UNKNOWN interrupts
+    await processGridState('unknown', pool);
+    assert.equal(pool.state.pending_on_minutes, 0);
+    assert.equal(pool.state.confirmed_present, 0); // Still 0
+});
+
+test('NEW: ABSENT interrupts pending_on_minutes counter', async () => {
+    const pool = createMemPool();
+    pool.state.confirmed_present = 0;
+    pool.state.last_confirmed_present = 0;
+    
+    // First minute of present
+    await processGridState('present', pool);
+    assert.equal(pool.state.pending_on_minutes, 1);
+    
+    // ABSENT interrupts
+    await processGridState('absent', pool);
+    assert.equal(pool.state.pending_on_minutes, 0);
+    assert.equal(pool.state.confirmed_present, 0); // Still 0
+});
+
+test('NEW: Initial NULL state confirms PRESENT immediately', async () => {
+    const pool = createMemPool();
+    pool.state.confirmed_present = null;
+    pool.state.last_confirmed_present = null;
+    
+    // First ever reading is present
+    let result = await processGridState('present', pool);
+    assert.equal(result.confirmedPresent, true);
+    assert.equal(result.shouldNotify, false); // No notification on initial
+    assert.equal(result.shouldPingSvitlobot, true);
+    assert.equal(pool.state.confirmed_present, 1);
+    assert.equal(pool.state.pending_on_minutes, 0);
 });
