@@ -472,6 +472,7 @@ app.post('/monitor', async (req, res) => {
             console.error('Ошибка SMS DB health notify:', smsError.message);
         }
 
+        let gridUpdate = null;
         try {
             // Новая логика: две входные розетки + свидетель (свет на кухне на резервном питании)
             const socket1Result = results.find((r) => r.deviceId === SOCKET1_DEVICE_ID || r.deviceId === HEATER_DEVICE_ID);
@@ -479,7 +480,7 @@ app.post('/monitor', async (req, res) => {
             const witnessResult = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
             
             const rawState = gridPower.determineGridState(socket1Result, socket2Result, witnessResult);
-            const gridUpdate = await db.processGridState(rawState);
+            gridUpdate = await db.processGridState(rawState);
             const pushTimestamp = new Date().toISOString();
             const confirmedPresent = gridUpdate.confirmedPresent;
 
@@ -517,7 +518,7 @@ app.post('/monitor', async (req, res) => {
         const kitchenLight = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
         await svitlobot.reportToSvitlobot(
             db.getPool(),
-            gridUpdate,
+            gridUpdate || { isUnknown: true, confirmedPresent: null, shouldPingSvitlobot: !!((inputSocket && inputSocket.isOnline === true) || (kitchenSocket && kitchenSocket.isOnline === true)) },
             inputSocket,
             kitchenSocket,
             kitchenLight
