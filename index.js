@@ -90,6 +90,7 @@ const TH_SENSOR_DEVICE_ID = 'bf2bf2252c37a041b0tbvs';
 const TH_SENSOR2_DEVICE_ID = 'bf829227fc480fdeabiwof';
 const SOCKET2_DEVICE_ID = 'bfcbd371e1af7827f9sj79';
 const SOCKET3_DEVICE_ID = 'bfc46baade5494be88qqgb';
+const KITCHEN_SOCKET_DEVICE_ID = SOCKET2_DEVICE_ID; // 'ввод кухня' - кухонная входная розетка
 
 const CONTROLLABLE_DEVICE_IDS = new Set([
     SOCKET2_DEVICE_ID,
@@ -472,16 +473,18 @@ app.post('/monitor', async (req, res) => {
         }
 
         try {
-            const socketResult = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
-            const rawPresent = gridPower.computeGridPresent(
-                socketResult?.isOnline,
-                socketResult?.voltageV
-            );
-            const gridUpdate = await db.processGridState(rawPresent);
+            // Новая логика: две входные розетки + свидетель (свет на кухне на резервном питании)
+            const socket1Result = results.find((r) => r.deviceId === SOCKET1_DEVICE_ID || r.deviceId === HEATER_DEVICE_ID);
+            const socket2Result = results.find((r) => r.deviceId === KITCHEN_SOCKET_DEVICE_ID);
+            const witnessResult = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
+            
+            const rawState = gridPower.determineGridState(socket1Result, socket2Result, witnessResult);
+            const gridUpdate = await db.processGridState(rawState);
             const pushTimestamp = new Date().toISOString();
             const confirmedPresent = gridUpdate.confirmedPresent;
 
-            if (gridUpdate.shouldNotify && confirmedPresent !== null) {
+            // Если UNKNOWN: не отправляем FCM пуш, виджет показывает последнее подтвержденное состояние
+            if (gridUpdate.shouldNotify && confirmedPresent !== null && !gridUpdate.isUnknown) {
                 await fcm.sendPowerStatusPush({
                     gridPresent: confirmedPresent,
                     chargePercent: ecoflowCharge,
@@ -489,7 +492,7 @@ app.post('/monitor', async (req, res) => {
                     notifyGridChange: true,
                 });
                 await db.recordWidgetPush(confirmedPresent, ecoflowCharge);
-            } else if (confirmedPresent !== null) {
+            } else if (confirmedPresent !== null && !gridUpdate.isUnknown) {
                 const chargePush = await db.evaluateChargePush(ecoflowCharge);
                 if (chargePush.shouldPush) {
                     await fcm.sendPowerStatusPush({
@@ -507,18 +510,17 @@ app.post('/monitor', async (req, res) => {
 
         // СвітлоБот: пинг «свет есть» / один PingOff за отключение (no-op без SVITLOBOT_CHANNEL_KEY).
         // Ждём до ответа (Cloud Run урезает CPU после ответа); ошибки внутри не пробрасываются.
-        // Проверяем обе розетки: ввод (SOCKET1/Обогреватель) и кухня (SOCKET2).
-        // Свидетели интернет-связи: свет на кухне (и свет в коридоре, если есть).
+        // НОВОЕ: использует gridUpdate.shouldPingSvitlobot для определения, должны ли мы пинговать.
+        // Свидетель: только свет на кухне (на резервном питании EcoFlow).
         const inputSocket = results.find((r) => r.deviceId === SOCKET1_DEVICE_ID || r.deviceId === HEATER_DEVICE_ID);
-        const kitchenSocket = results.find((r) => r.deviceId === SOCKET2_DEVICE_ID);
+        const kitchenSocket = results.find((r) => r.deviceId === KITCHEN_SOCKET_DEVICE_ID);
         const kitchenLight = results.find((r) => r.deviceId === KITCHEN_LIGHT_DEVICE_ID);
-        const corridorLight = results.find((r) => r.deviceId === BOILER_DEVICE_ID);
         await svitlobot.reportToSvitlobot(
             db.getPool(),
+            gridUpdate,
             inputSocket,
             kitchenSocket,
-            kitchenLight,
-            corridorLight
+            kitchenLight
         );
 
         // Графики отключений: реально опрашиваются не чаще раза в 15 мин (SCHEDULE_REFRESH_MINUTES).
