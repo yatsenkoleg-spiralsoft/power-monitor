@@ -623,65 +623,143 @@ async function getAllFcmTokens() {
 }
 
 /**
- * Debounced grid state: notify after 2 consecutive minutes of new raw reading.
- * @param {boolean|null} rawPresent
- * @returns {Promise<{ changed: boolean, confirmedPresent: boolean|null, shouldNotify: boolean }>}
+ * Debounced grid state with internet outage detection.
+ * 
+ * @param {'present'|'absent'|'unknown'} rawState - Current grid state from determineGridState
+ * @returns {Promise<{ 
+ *   changed: boolean, 
+ *   confirmedPresent: boolean|null, 
+ *   shouldNotify: boolean,
+ *   isUnknown: boolean,
+ *   lastConfirmedPresent: boolean|null,
+ *   shouldPingSvitlobot: boolean
+ * }>}
  */
-async function processGridState(rawPresent) {
-    if (rawPresent === null) {
-        return { changed: false, confirmedPresent: null, shouldNotify: false };
-    }
-
+async function processGridState(rawState) {
     const pool = getPool();
-    const rawBit = rawPresent ? 1 : 0;
-
     const [rows] = await pool.execute('SELECT * FROM grid_state WHERE id = 1');
     let state = rows[0];
 
     if (!state) {
         await pool.execute(
-            'INSERT INTO grid_state (id, confirmed_present, pending_present, pending_streak) VALUES (1, NULL, ?, 1)',
-            [rawBit]
+            'INSERT INTO grid_state (id, confirmed_present, last_confirmed_present, pending_present, pending_streak, pending_off_minutes, unknown_since) VALUES (1, NULL, NULL, NULL, 0, 0, NULL)'
         );
-        return { changed: false, confirmedPresent: null, shouldNotify: false };
+        return { 
+            changed: false, 
+            confirmedPresent: null, 
+            shouldNotify: false,
+            isUnknown: rawState === 'unknown',
+            lastConfirmedPresent: null,
+            shouldPingSvitlobot: false
+        };
     }
 
-    let pendingPresent = state.pending_present;
-    let pendingStreak = state.pending_streak;
     let confirmedPresent = state.confirmed_present;
-
-    if (pendingPresent === null || pendingPresent !== rawBit) {
-        pendingPresent = rawBit;
-        pendingStreak = 1;
-    } else {
-        pendingStreak += 1;
-    }
-
+    let lastConfirmedPresent = state.last_confirmed_present;
+    let pendingOffMinutes = state.pending_off_minutes || 0;
+    let unknownSince = state.unknown_since;
     let shouldNotify = false;
     let changed = false;
 
-    if (pendingStreak >= 2) {
-        if (confirmedPresent === null) {
-            confirmedPresent = pendingPresent;
-            changed = true;
-        } else if (pendingPresent !== confirmedPresent) {
-            confirmedPresent = pendingPresent;
-            shouldNotify = true;
-            changed = true;
+    // Handle UNKNOWN state (internet outage suspected)
+    if (rawState === 'unknown') {
+        // Start tracking unknown duration if not already tracking
+        if (!unknownSince) {
+            unknownSince = new Date();
         }
+        
+        // Don't change confirmed state, don't notify
+        // Keep last confirmed state for widget
+        await pool.execute(
+            `UPDATE grid_state
+             SET unknown_since = ?, pending_off_minutes = 0, updated_at = NOW()
+             WHERE id = 1`,
+            [unknownSince]
+        );
+        
+        // Check if unknown duration exceeds threshold (30 minutes default)
+        const unknownThresholdMinutes = parseInt(process.env.UNKNOWN_THRESHOLD_MINUTES || '30', 10);
+        const unknownDurationMinutes = (new Date() - new Date(unknownSince)) / (60 * 1000);
+        const shouldPingSvitlobot = lastConfirmedPresent === 1 && unknownDurationMinutes < unknownThresholdMinutes;
+        
+        return {
+            changed: false,
+            confirmedPresent: confirmedPresent === null ? null : confirmedPresent === 1,
+            shouldNotify: false,
+            isUnknown: true,
+            lastConfirmedPresent: lastConfirmedPresent === null ? null : lastConfirmedPresent === 1,
+            shouldPingSvitlobot
+        };
     }
 
-    await pool.execute(
-        `UPDATE grid_state
-         SET confirmed_present = ?, pending_present = ?, pending_streak = ?, updated_at = NOW()
-         WHERE id = 1`,
-        [confirmedPresent, pendingPresent, pendingStreak]
-    );
+    // Clear unknown state when devices come back online
+    unknownSince = null;
 
+    // Handle PRESENT state
+    if (rawState === 'present') {
+        pendingOffMinutes = 0;
+        
+        // Immediate confirmation for PRESENT (no debounce needed for power restoration)
+        if (confirmedPresent !== 1) {
+            confirmedPresent = 1;
+            lastConfirmedPresent = 1;
+            shouldNotify = confirmedPresent !== state.confirmed_present && state.confirmed_present !== null;
+            changed = true;
+        }
+        
+        await pool.execute(
+            `UPDATE grid_state
+             SET confirmed_present = 1, last_confirmed_present = 1, pending_off_minutes = 0, unknown_since = NULL, updated_at = NOW()
+             WHERE id = 1`
+        );
+        
+        return {
+            changed,
+            confirmedPresent: true,
+            shouldNotify,
+            isUnknown: false,
+            lastConfirmedPresent: true,
+            shouldPingSvitlobot: true
+        };
+    }
+
+    // Handle ABSENT state (requires 2-minute debounce)
+    if (rawState === 'absent') {
+        pendingOffMinutes += 1;
+        
+        // Only confirm ABSENT after 2 consecutive minutes
+        if (pendingOffMinutes >= 2 && confirmedPresent !== 0) {
+            confirmedPresent = 0;
+            lastConfirmedPresent = 0;
+            shouldNotify = state.confirmed_present !== 0 && state.confirmed_present !== null;
+            changed = true;
+        }
+        
+        await pool.execute(
+            `UPDATE grid_state
+             SET confirmed_present = ?, last_confirmed_present = ?, pending_off_minutes = ?, unknown_since = NULL, updated_at = NOW()
+             WHERE id = 1`,
+            [confirmedPresent, lastConfirmedPresent, pendingOffMinutes]
+        );
+        
+        return {
+            changed,
+            confirmedPresent: confirmedPresent === null ? null : confirmedPresent === 1,
+            shouldNotify,
+            isUnknown: false,
+            lastConfirmedPresent: lastConfirmedPresent === null ? null : lastConfirmedPresent === 1,
+            shouldPingSvitlobot: pendingOffMinutes >= 2
+        };
+    }
+
+    // Should never reach here
     return {
-        changed,
+        changed: false,
         confirmedPresent: confirmedPresent === null ? null : confirmedPresent === 1,
-        shouldNotify,
+        shouldNotify: false,
+        isUnknown: false,
+        lastConfirmedPresent: lastConfirmedPresent === null ? null : lastConfirmedPresent === 1,
+        shouldPingSvitlobot: false
     };
 }
 

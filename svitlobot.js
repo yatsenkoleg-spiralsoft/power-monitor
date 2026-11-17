@@ -87,23 +87,34 @@ async function callApi(method, key, fetchImpl = fetch) {
 
 /**
  * Вызывать после каждого опроса розеток.
+ * НОВОЕ ПОВЕДЕНИЕ: использует gridUpdate.shouldPingSvitlobot для определения,
+ * должны ли мы пинговать СвітлоБот (учитывает UNKNOWN state и 2-минутный debounce).
+ * 
  * @param {object} pool mysql2 pool
+ * @param {object} gridUpdate результат db.processGridState (содержит shouldPingSvitlobot)
  * @param {object|undefined} inputSocketResult результат tuya.checkDeviceAvailability для розетки ввод
  * @param {object|undefined} kitchenSocketResult результат tuya.checkDeviceAvailability для розетки кухня
- * @param {object|undefined} kitchenLightResult результат для света на кухне (witness)
- * @param {object|undefined} corridorLightResult результат для света в коридоре (witness)
+ * @param {object|undefined} witnessResult результат для witness device (свет на кухне)
  */
-async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, kitchenLightResult, corridorLightResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
+async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSocketResult, witnessResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
     if (!key || !String(key).trim()) return { skipped: 'no-key' };
     key = String(key).trim();
     try {
         await ensureTable(pool);
         
-        const reading = aggregateReadings(inputSocketResult, kitchenSocketResult, kitchenLightResult, corridorLightResult);
         const inputOnline = inputSocketResult && inputSocketResult.isOnline === true;
         const kitchenOnline = kitchenSocketResult && kitchenSocketResult.isOnline === true;
-        const witnessOnline = (kitchenLightResult && kitchenLightResult.isOnline === true) || 
-                              (corridorLightResult && corridorLightResult.isOnline === true);
+        const witnessOnline = witnessResult && witnessResult.isOnline === true;
+        
+        // Determine reading based on current state
+        let reading = 'unknown';
+        if (gridUpdate.isUnknown) {
+            reading = 'unknown';
+        } else if (gridUpdate.confirmedPresent) {
+            reading = 'on';
+        } else if (gridUpdate.confirmedPresent === false) {
+            reading = 'off';
+        }
 
         if (reading === 'on') {
             await pool.execute('UPDATE svitlobot_state SET off_sent = 0, updated_at = UTC_TIMESTAMP() WHERE id = 1');
@@ -118,8 +129,8 @@ async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, k
             return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping', ok: r.ok, status: r.status };
         }
 
-        if (reading === 'off') {
-            // ОБЕ розетки офлайн И есть онлайн-свидетель → отправляем PingOff (если ещё не отправлен)
+        if (reading === 'off' && gridUpdate.shouldPingSvitlobot) {
+            // ОБЕ розетки офлайн И есть онлайн-свидетель И прошло 2 минуты → отправляем PingOff (если ещё не отправлен)
             const [claim] = await pool.execute(
                 'UPDATE svitlobot_state SET off_sent = 1, updated_at = UTC_TIMESTAMP() WHERE id = 1 AND off_sent = 0'
             );
@@ -135,7 +146,21 @@ async function reportToSvitlobot(pool, inputSocketResult, kitchenSocketResult, k
             return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-off', ok: r.ok, status: r.status };
         }
 
-        // unknown: ошибки API, неполные данные, или обе розетки офлайн без свидетеля — ничего не шлём
+        // unknown OR off but not yet confirmed (< 2 minutes): handle special cases
+        if (reading === 'unknown' && gridUpdate.shouldPingSvitlobot) {
+            // UNKNOWN but last confirmed state was ON and < 30 min -> keep pinging
+            await pool.execute('UPDATE svitlobot_state SET off_sent = 0, updated_at = UTC_TIMESTAMP() WHERE id = 1');
+            const [claim] = await pool.execute(
+                `UPDATE svitlobot_state SET last_ping_at = UTC_TIMESTAMP()
+                 WHERE id = 1 AND (last_ping_at IS NULL OR last_ping_at <= UTC_TIMESTAMP() - INTERVAL ${MIN_PING_INTERVAL_SEC} SECOND)`
+            );
+            if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-throttled-unknown' };
+            const r = await callApi('channelPing', key, fetchImpl);
+            if (!r.ok) console.warn(`СвітлоБот channelPing (unknown) не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
+            return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-unknown', ok: r.ok, status: r.status };
+        }
+
+        // unknown/off but shouldn't ping, or off but < 2 min
         return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'none' };
     } catch (e) {
         console.error('СвітлоБот: ошибка обработки:', e.message);
