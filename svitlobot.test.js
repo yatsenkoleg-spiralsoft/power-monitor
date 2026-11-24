@@ -219,17 +219,79 @@ test('witness online qualifies (after 2 min debounce)', async () => {
     assert.deepEqual(calls, ['channelPingOff']);
 });
 
-test('PingOff retried on failure with witness guard', async () => {
+test('PingOff retried on next poll when all in-call attempts fail (witness guard)', async () => {
     const p = memPool(); let n = 0;
-    const fetchImpl = async () => { n++; if (n === 1) throw new Error('net'); return { ok: true, status: 200 }; };
+    // Первые 4 вызова падают (все попытки одного опроса), 5-й успешен.
+    const fetchImpl = async () => { n++; if (n <= 4) throw new Error('net'); return { ok: true, status: 200 }; };
     const gridOff = makeGridUpdate('off', true);
+    const o = { key: 'K', fetchImpl, retryDelayMs: 0 };
     
-    await reportToSvitlobot(p, gridOff, offline, offline, online, { key: 'K', fetchImpl });
-    assert.equal(n, 1);
+    const r1 = await reportToSvitlobot(p, gridOff, offline, offline, online, o);
+    assert.equal(n, 4);
+    assert.equal(r1.ok, false);
     
     // Retry on next poll (off_sent was reset)
-    await reportToSvitlobot(p, gridOff, offline, offline, online, { key: 'K', fetchImpl });
+    const r2 = await reportToSvitlobot(p, gridOff, offline, offline, online, o);
+    assert.equal(n, 5);
+    assert.equal(r2.ok, true);
+});
+
+test('channelPing: 502 → retried 3 more times with delay, succeeds on 4th attempt', async () => {
+    const p = memPool(); const calls = []; const sleeps = [];
+    const fetchImpl = async (url) => {
+        calls.push(url.split('?')[0].split('/').pop());
+        return calls.length < 4 ? { ok: false, status: 502 } : { ok: true, status: 200 };
+    };
+    const sleepImpl = async (ms) => { sleeps.push(ms); };
+    const r = await reportToSvitlobot(p, makeGridUpdate('on'), online, online, online, { key: 'K', fetchImpl, sleepImpl });
+    assert.deepEqual(calls, ['channelPing', 'channelPing', 'channelPing', 'channelPing']);
+    assert.deepEqual(sleeps, [3000, 3000, 3000]);
+    assert.equal(r.action, 'ping');
+    assert.equal(r.ok, true);
+});
+
+test('channelPing: success on 2nd attempt stops retrying', async () => {
+    const p = memPool(); let n = 0;
+    const fetchImpl = async () => { n++; if (n === 1) throw new Error('net'); return { ok: true, status: 200 }; };
+    const r = await reportToSvitlobot(p, makeGridUpdate('on'), online, online, online, { key: 'K', fetchImpl, retryDelayMs: 0 });
     assert.equal(n, 2);
+    assert.equal(r.ok, true);
+});
+
+test('channelPing: all 4 attempts fail (timeout/4xx/5xx) → final failure, max 4 calls', async () => {
+    const p = memPool(); let n = 0;
+    const fails = [
+        () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; },
+        () => ({ ok: false, status: 400 }),
+        () => ({ ok: false, status: 503 }),
+        () => { throw new Error('ECONNRESET'); },
+    ];
+    const fetchImpl = async () => fails[n++]();
+    const r = await reportToSvitlobot(p, makeGridUpdate('on'), online, online, online, { key: 'K', fetchImpl, retryDelayMs: 0 });
+    assert.equal(n, 4);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 0);
+});
+
+test('channelPing (unknown, last ON) also retried', async () => {
+    const p = memPool(); let n = 0;
+    const fetchImpl = async () => { n++; return n < 3 ? { ok: false, status: 502 } : { ok: true, status: 200 }; };
+    const r = await reportToSvitlobot(p, makeGridUpdate('unknown', true), offline, offline, offline, { key: 'K', fetchImpl, retryDelayMs: 0 });
+    assert.equal(n, 3);
+    assert.equal(r.action, 'ping-unknown');
+    assert.equal(r.ok, true);
+});
+
+test('throttle unchanged: second poll within 60 s does not call API', async () => {
+    const p = memPool(); let n = 0;
+    const fetchImpl = async () => { n++; return { ok: false, status: 502 }; };
+    const o = { key: 'K', fetchImpl, retryDelayMs: 0 };
+    await reportToSvitlobot(p, makeGridUpdate('on'), online, online, online, o);
+    assert.equal(n, 4);
+    p.s.now += 30;
+    const r = await reportToSvitlobot(p, makeGridUpdate('on'), online, online, online, o);
+    assert.equal(r.action, 'ping-throttled');
+    assert.equal(n, 4);
 });
 
 test('REGRESSION: witness online confirms internet (after 2 min debounce)', async () => {

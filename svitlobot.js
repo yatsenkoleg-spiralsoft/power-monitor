@@ -24,6 +24,10 @@ const API_BASE = 'https://api.svitlobot.in.ua';
 const USER_AGENT = 'power-monitor/1.0';
 const TIMEOUT_MS = 6000;
 const MIN_PING_INTERVAL_SEC = 60;
+// Повторы при сбое вызова API (non-ok статус, таймаут, сетевая ошибка): всего до 4 попыток.
+// Худший случай: 4 × 6 с таймаут + 3 × 3 с пауза ≈ 33 с — сильно меньше таймаута Cloud Run (300 с).
+const MAX_ATTEMPTS = 4;
+const RETRY_DELAY_MS = 3000;
 
 let tableReady = false;
 
@@ -85,6 +89,27 @@ async function callApi(method, key, fetchImpl = fetch) {
     }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * callApi с повторами: при неуспехе (non-ok 4xx/5xx, таймаут, сетевая ошибка) повторяем
+ * до maxAttempts попыток всего, с паузой retryDelayMs. Каждая неудачная попытка логируется
+ * (без channel_key). Возвращает результат последней попытки + attempts.
+ */
+async function callApiWithRetry(method, key, fetchImpl = fetch, { maxAttempts = MAX_ATTEMPTS, retryDelayMs = RETRY_DELAY_MS, sleepImpl = sleep } = {}) {
+    let r = { ok: false, status: 0 };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        r = await callApi(method, key, fetchImpl);
+        if (r.ok) {
+            if (attempt > 1) console.log(`СвітлоБот ${method}: успешно с попытки ${attempt}/${maxAttempts}`);
+            return { ...r, attempts: attempt };
+        }
+        console.warn(`СвітлоБот ${method}: попытка ${attempt}/${maxAttempts} не удалась: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
+        if (attempt < maxAttempts && retryDelayMs > 0) await sleepImpl(retryDelayMs);
+    }
+    return { ...r, attempts: maxAttempts };
+}
+
 /**
  * Вызывать после каждого опроса розеток.
  * НОВОЕ ПОВЕДЕНИЕ: использует gridUpdate.shouldPingSvitlobot для определения,
@@ -96,7 +121,9 @@ async function callApi(method, key, fetchImpl = fetch) {
  * @param {object|undefined} kitchenSocketResult результат tuya.checkDeviceAvailability для розетки кухня
  * @param {object|undefined} witnessResult результат для witness device (свет на кухне)
  */
-async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSocketResult, witnessResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl } = {}) {
+async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSocketResult, witnessResult, { key = process.env.SVITLOBOT_CHANNEL_KEY, fetchImpl, retryDelayMs, maxAttempts, sleepImpl } = {}) {
+    const retryOpts = { retryDelayMs, maxAttempts, sleepImpl };
+    Object.keys(retryOpts).forEach((k) => retryOpts[k] === undefined && delete retryOpts[k]);
     if (!key || !String(key).trim()) return { skipped: 'no-key' };
     key = String(key).trim();
     try {
@@ -124,8 +151,8 @@ async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSoc
                  WHERE id = 1 AND (last_ping_at IS NULL OR last_ping_at <= UTC_TIMESTAMP() - INTERVAL ${MIN_PING_INTERVAL_SEC} SECOND)`
             );
             if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-throttled' };
-            const r = await callApi('channelPing', key, fetchImpl);
-            if (!r.ok) console.warn(`СвітлоБот channelPing не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
+            const r = await callApiWithRetry('channelPing', key, fetchImpl, retryOpts);
+            if (!r.ok) console.warn(`СвітлоБот channelPing не удался после ${r.attempts} попыток: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
             return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping', ok: r.ok, status: r.status };
         }
 
@@ -135,11 +162,11 @@ async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSoc
                 'UPDATE svitlobot_state SET off_sent = 1, updated_at = UTC_TIMESTAMP() WHERE id = 1 AND off_sent = 0'
             );
             if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'off-already-sent' };
-            const r = await callApi('channelPingOff', key, fetchImpl);
+            const r = await callApiWithRetry('channelPingOff', key, fetchImpl, retryOpts);
             if (!r.ok) {
                 // Вернём флаг — повторим на следующем опросе (если свет всё ещё нет).
                 await pool.execute('UPDATE svitlobot_state SET off_sent = 0 WHERE id = 1');
-                console.warn(`СвітлоБот channelPingOff не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
+                console.warn(`СвітлоБот channelPingOff не удался после ${r.attempts} попыток: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
             } else {
                 console.log('СвітлоБот: отправлен channelPingOff');
             }
@@ -155,8 +182,8 @@ async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSoc
                  WHERE id = 1 AND (last_ping_at IS NULL OR last_ping_at <= UTC_TIMESTAMP() - INTERVAL ${MIN_PING_INTERVAL_SEC} SECOND)`
             );
             if (!claim.affectedRows) return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-throttled-unknown' };
-            const r = await callApi('channelPing', key, fetchImpl);
-            if (!r.ok) console.warn(`СвітлоБот channelPing (unknown) не удался: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
+            const r = await callApiWithRetry('channelPing', key, fetchImpl, retryOpts);
+            if (!r.ok) console.warn(`СвітлоБот channelPing (unknown) не удался после ${r.attempts} попыток: status=${r.status}${r.error ? ` (${r.error})` : ''}`);
             return { inputOnline, kitchenOnline, witnessOnline, reading, action: 'ping-unknown', ok: r.ok, status: r.status };
         }
 
@@ -168,4 +195,4 @@ async function reportToSvitlobot(pool, gridUpdate, inputSocketResult, kitchenSoc
     }
 }
 
-module.exports = { reportToSvitlobot, aggregateReadings, callApi, MIN_PING_INTERVAL_SEC };
+module.exports = { reportToSvitlobot, aggregateReadings, callApi, callApiWithRetry, MIN_PING_INTERVAL_SEC, MAX_ATTEMPTS, RETRY_DELAY_MS };
